@@ -2,161 +2,228 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// Define the API Gateway URL
-const API_GATEWAY_URL = 'http://localhost:8082'; // Your API Gateway's address
-
 export function activate(context: vscode.ExtensionContext) {
-    console.log('Protege Extension is now active!');
+    console.log('OntoCode extension is now active!');
 
-    // Register the WebviewViewProvider for the sidebar view
-    const protegeLoginProvider = new ProtegeLoginViewProvider(context.extensionUri, context);
-    context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('protege-login-view', protegeLoginProvider)
-    );
+    const disposable = vscode.commands.registerCommand('ontocode.edit', async () => {
+        const panel = OntoCodePanel.createOrShow(context.extensionUri, context);
+
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor) {
+            const document = activeEditor.document;
+            if (document.fileName.endsWith('.owl')) {
+                const fileContent = document.getText();
+                const fileName = path.basename(document.fileName);
+                panel.sendFileToWebview(fileName, fileContent);
+            }
+        }
+    });
+
+    context.subscriptions.push(disposable);
 }
 
-class ProtegeLoginViewProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'protege-login-view'; // Must match view ID in package.json
+const TOKEN_KEY = 'ontocode.authToken';
 
-    private _view?: vscode.WebviewView;
+class OntoCodePanel {
+    public static currentPanel: OntoCodePanel | undefined;
+    private readonly _panel: vscode.WebviewPanel;
+    private readonly _extensionUri: vscode.Uri;
+    private readonly _context: vscode.ExtensionContext;
+    private _disposables: vscode.Disposable[] = [];
 
-    constructor(private readonly _extensionUri: vscode.Uri, private readonly _context: vscode.ExtensionContext) {}
+    public static createOrShow(extensionUri: vscode.Uri, context: vscode.ExtensionContext): OntoCodePanel {
+        const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 
-    public resolveWebviewView(
-        webviewView: vscode.WebviewView,
-        context: vscode.WebviewViewResolveContext,
-        _token: vscode.CancellationToken,
-    ) {
-        this._view = webviewView;
+        if (OntoCodePanel.currentPanel) {
+            OntoCodePanel.currentPanel._panel.reveal(column);
+            return OntoCodePanel.currentPanel;
+        }
 
-        webviewView.webview.options = {
-            // Enable JavaScript in the webview
-            enableScripts: true,
-            // Restrict the webview to only load content from the extension's `webview` directory
-            localResourceRoots: [vscode.Uri.joinPath(this._extensionUri, 'webview')]
-        };
+        const panel = vscode.window.createWebviewPanel(
+            'ontocodeEditor',
+            'OntoCode Editor',
+            column,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: [
+                    vscode.Uri.joinPath(extensionUri, 'webview-src', 'dist'),
+                    vscode.Uri.joinPath(extensionUri, 'webview-src', 'dist', 'assets')
+                ]
+            }
+        );
 
-        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+        OntoCodePanel.currentPanel = new OntoCodePanel(panel, extensionUri, context);
+        return OntoCodePanel.currentPanel;
+    }
 
-        webviewView.webview.onDidReceiveMessage(
+       private async sendStoredTokenToWebview() {
+        try {
+            const token = await this._context.secrets.get(TOKEN_KEY); // Retrieve using TOKEN_KEY
+            this._panel.webview.postMessage({
+                type: 'storedAuthToken', // New message type for webview to receive
+                token: token || null // Send null if no token found
+            });
+            console.log('Extension sent storedAuthToken to webview');
+        } catch (e) {
+            console.error('Failed to retrieve token from secure storage:', e);
+            vscode.window.showErrorMessage('Could not retrieve auth token from secure storage.');
+            this._panel.webview.postMessage({ type: 'storedAuthToken', token: null });
+        }
+    }
+
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
+        this._panel = panel;
+        this._extensionUri = extensionUri;
+        this._context = context;
+
+        this._update();
+
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+        this._panel.webview.onDidReceiveMessage(
             async message => {
-                switch (message.command) {
-                    case 'login':
-                        await this.handleLoginRequest(message.username, message.password, webviewView.webview);
+                switch (message.type) {
+                    case 'info':
+                        vscode.window.showInformationMessage(message.value);
+                        break;
+                    case 'error':
+                        vscode.window.showErrorMessage(message.value);
+                        break;
+                    case 'saveFile':
+                        this.saveFile(message.fileName, message.content);
+                        break;
+                    case 'saveAuthToken':
+                        if (message.token) {
+                            await this._context.secrets.store(TOKEN_KEY, message.token);
+                            vscode.window.showInformationMessage('Auth token securely stored!');
+                        }
                         return;
-                    case 'alert': // Example: Webview requests an alert from VS Code
-                        vscode.window.showErrorMessage(message.text);
-                        return;
-                    case 'getToken': // Webview requests the stored token
-                        await this.sendStoredToken(webviewView.webview);
-                        return;
-                    case 'logout': // Webview requests logout
-                        await this.clearStoredToken();
-                        webviewView.webview.postMessage({ command: 'loggedOut' });
-                        vscode.window.showInformationMessage('Logged out from Protege.');
+                    case 'requestFile':
+                        this.handleFileRequest();
+                        break;
+                    case 'requestAuthToken':
+                        await this.sendStoredTokenToWebview();
                         return;
                 }
             },
-            undefined,
-            this._context.subscriptions
+            null,
+            this._disposables
         );
-
-        // Send token to webview immediately if already logged in on activation/reload
-        this.sendStoredToken(webviewView.webview);
     }
 
-    private _getHtmlForWebview(webview: vscode.Webview) {
-        // Local path to the compiled React app's index.html
-        const htmlPath = vscode.Uri.joinPath(this._extensionUri, 'webview', 'index.html');
+    public sendFileToWebview(fileName: string, content: string) {
+        this._panel.webview.postMessage({
+            type: 'fileContent',
+            fileName,
+            content
+        });
+    }
+
+    private async handleFileRequest() {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && activeEditor.document.fileName.endsWith('.owl')) {
+            const fileContent = activeEditor.document.getText();
+            const fileName = path.basename(activeEditor.document.fileName);
+            this.sendFileToWebview(fileName, fileContent);
+        }
+    }
+
+    private async saveFile(fileName: string, content: string) {
+        try {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (workspaceFolder) {
+                const filePath = path.join(workspaceFolder.uri.fsPath, fileName);
+                fs.writeFileSync(filePath, content);
+                vscode.window.showInformationMessage(`File saved: ${fileName}`);
+            }
+        } catch (error) {
+            vscode.window.showErrorMessage(`Error saving file: ${error}`);
+        }
+    }
+
+    private _update() {
+        const webview = this._panel.webview;
+        this._panel.webview.html = this._getHtmlForWebview(webview);
+        this._panel.webview.postMessage({ type: 'requestAuthToken' });
+    }
+
+    private _getHtmlForWebview(webview: vscode.Webview): string {
+        const buildPath = vscode.Uri.joinPath(this._extensionUri, 'webview-src', 'dist');
+        const indexPath = vscode.Uri.joinPath(buildPath, 'index.html');
+
         let htmlContent = '';
         try {
-            htmlContent = fs.readFileSync(htmlPath.fsPath, 'utf8');
+            htmlContent = fs.readFileSync(indexPath.fsPath, 'utf8');
         } catch (error) {
-            console.error('Failed to read webview HTML file:', error);
-            return `<!DOCTYPE html><html lang="en"><body><h1>Error: Webview content not found. Please rebuild the extension.</h1></body></html>`;
+            console.error('Failed to read index.html:', error);
+            return `<!DOCTYPE html><html><body><h1>Error loading webview</h1><p>${error}</p></body></html>`;
         }
 
-        // Replace relative paths in the HTML with webview URIs
-        // This is necessary because webviews run in a virtual file system.
-        const baseUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'webview'));
-        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'webview', 'static', 'js', 'main.js'));
-        const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'webview', 'static', 'css', 'main.css'));
+        const nonce = getNonce();
 
-        // Inject the absolute paths into the HTML content
-        // This assumes your React build outputs main.js and main.css in static/js and static/css
-        const nonce = getNonce(); // Used for Content Security Policy
+        const vscodeApiInjectionScript = `
+        <script nonce="${nonce}">
+            // Acquire the VS Code API
+            const vscode = acquireVsCodeApi();
+            // Expose it globally to your React app
+            window.vscode = vscode;
+            console.log("VS Code API injected successfully!"); // Debugging log
+        </script>
+    `;
 
-        return htmlContent
-            .replace(/<base href="\/"\/>/, `<base href="${baseUri.toString()}/"/>`)
-            .replace(/<link href="\/static\/css\/main.css" rel="stylesheet">/, `<link href="${styleUri}" rel="stylesheet">`)
-            .replace(/<script defer="defer" src="\/static\/js\/main.js"><\/script>/, `<script nonce="${nonce}" defer="defer" src="${scriptUri}"></script>`)
-            .replace(/<meta http-equiv="Content-Security-Policy" content=".*?"\/>/,
-                `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src ${webview.cspSource} https:; font-src ${webview.cspSource}; connect-src ${webview.cspSource} ${API_GATEWAY_URL} https://*; media-src ${webview.cspSource}; worker-src 'self';">`
-            );
-    }
+        htmlContent = htmlContent.replace(/<meta[^>]*Content-Security-Policy[^>]*>/gi, '');
+        htmlContent = htmlContent.replace(
+            /(<head>)/,
+            `$1
+            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data: blob:; script-src 'nonce-${nonce}' ${webview.cspSource} 'unsafe-eval'; style-src 'unsafe-inline' ${webview.cspSource}; font-src ${webview.cspSource} data:; connect-src http://localhost:8082 https:;">
+            ${vscodeApiInjectionScript}`
+        );
+        htmlContent = htmlContent.replace(
+            /<head.*?>/,
+            match =>
+                `${match}
+                <meta http-equiv="Content-Security-Policy" content="
+                    default-src 'none';
+                    img-src ${webview.cspSource} https: data: blob:;
+                    script-src 'nonce-${nonce}' ${webview.cspSource} 'unsafe-eval';
+                    style-src 'unsafe-inline' ${webview.cspSource};
+                    font-src ${webview.cspSource} data:;
+                    connect-src http://localhost:8082 http:;">`
+        );
 
-    private async handleLoginRequest(username: string, password: string, webview: vscode.Webview) {
-        try {
-            const loginUrl = `${API_GATEWAY_URL}/api/auth/login`; // Your API Gateway login endpoint
-            const response = await fetch(loginUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ username, password })
-            });
-
-            if (response.ok) {
-                const data = await response.json() as { jwt: string };
-                const token = data.jwt;
-                await this.storeTokenSecurely(token); // Store token using VS Code's SecretStorage
-                vscode.window.showInformationMessage('Login successful!');
-                webview.postMessage({ command: 'loginSuccess', token: token }); // Notify webview
-            } else {
-                const errorData = await response.text();
-                vscode.window.showErrorMessage(`Login failed: ${errorData}`);
-                webview.postMessage({ command: 'loginFailed', error: errorData }); // Notify webview
+        htmlContent = htmlContent.replace(/(href|src)="([^"]+)"/g, (match, attr, rawPath) => {
+            if (rawPath.startsWith('http') || rawPath.startsWith('data:') || rawPath.startsWith('blob:')) {
+                return match;
             }
-        } catch (error: any) {
-            console.error('Login error:', error);
-            vscode.window.showErrorMessage(`Login error: ${error.message || 'Unknown error'}`);
-            webview.postMessage({ command: 'loginFailed', error: error.message || 'Unknown error' });
-        }
+
+            const resourcePath = rawPath.startsWith('/')
+                ? vscode.Uri.joinPath(buildPath, rawPath.slice(1))
+                : vscode.Uri.joinPath(buildPath, rawPath);
+
+            const webviewUri = webview.asWebviewUri(resourcePath);
+            return `${attr}="${webviewUri}"`;
+        });
+
+        htmlContent = htmlContent.replace(/<script(?![^>]*nonce)(.*?)>/g, `<script$1 nonce="${nonce}">`);
+        htmlContent = htmlContent.replace(/<style(?![^>]*nonce)(.*?)>/g, `<style$1 nonce="${nonce}">`);
+
+        return htmlContent;
     }
 
-    private async storeTokenSecurely(token: string) {
-        // Use VS Code's SecretStorage for secure token storage
-        await this._context.secrets.store('protege_jwt_token', token);
-    }
-
-    private async getStoredToken(): Promise<string | undefined> {
-        return await this._context.secrets.get('protege_jwt_token');
-    }
-
-    private async clearStoredToken() {
-        await this._context.secrets.delete('protege_jwt_token');
-    }
-
-    private async sendStoredToken(webview: vscode.Webview) {
-        const token = await this.getStoredToken();
-        if (token) {
-            webview.postMessage({ command: 'tokenReceived', token: token });
-        } else {
-            webview.postMessage({ command: 'noToken' });
+    public dispose() {
+        OntoCodePanel.currentPanel = undefined;
+        this._panel.dispose();
+        while (this._disposables.length) {
+            const disposable = this._disposables.pop();
+            disposable?.dispose();
         }
     }
 }
 
-// Utility function for Content Security Policy (CSP) nonce
-function getNonce() {
-    let text = '';
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-        text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
+function getNonce(): string {
+    const charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    return Array.from({ length: 32 }, () => charset[Math.floor(Math.random() * charset.length)]).join('');
 }
 
-export function deactivate() {
-    console.log('Protege Extension is deactivated.');
-}
+export function deactivate() {}

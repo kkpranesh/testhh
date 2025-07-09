@@ -1,73 +1,96 @@
 {
-    "name": "protege-extension",
-    "displayName": "Protege Extension",
-    "description": "VS Code extension for Protege Web Application",
-    "version": "0.0.1",
-    "publisher": "YourPublisherName",
-    "engines": {
-        "vscode": "^1.80.0"
-    },
-    "categories": [
-        "Other"
+  "name": "ontocode-extension",
+  "displayName": "OntoCode OWL Editor",
+  "description": "Edit OWL files with authentication and web-based interface",
+  "version": "1.0.0",
+  "publisher": "your-publisher-name",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other",
+    "Languages",
+    "Formatters"
+  ],
+  "keywords": [
+    "owl",
+    "ontology",
+    "semantic web",
+    "rdf",
+    "knowledge graph"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "webviews": [
+      {
+        "viewType": "ontocodeEditor",
+        "displayName": "OntoCode Editor",
+        "when": "true"
+      }
     ],
-    
-    "activationEvents": [
-        "onView:protege-login-view"
+    "commands": [
+      {
+        "command": "ontocode.edit",
+        "title": "Edit with OntoCode",
+        "category": "OntoCode"
+      }
     ],
-    "main": "./dist/extension.js",
-    "contributes": {
-        "viewsContainers": {
-            "activitybar": [
-                {
-                    "id": "protege-sidebar-view",
-                    "title": "Protege",
-                    "icon": "resources/protege-icon.svg"
-                }
-            ]
-        },
-        "views": {
-            "protege-sidebar-view": [
-                {
-                    "id": "protege-login-view",
-                    "name": "Protege Dashboard"
-                }
-            ]
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "ontocode.edit",
+          "when": "resourceExtname == .owl"
         }
+      ],
+      "explorer/context": [
+        {
+          "command": "ontocode.edit",
+          "when": "resourceExtname == .owl",
+          "group": "navigation"
+        }
+      ]
     },
-    "scripts": {
-        "vscode:prepublish": "npm run compile-webview && npm run compile",
-        "compile": "webpack --config webpack.extension.js",
-        "watch": "webpack --watch --config webpack.extension.js",
-        "package": "webpack --mode production --devtool hidden-source-map --config webpack.extension.js",
-        "compile-webview": "webpack --config webpack.webview.cjs --mode production",
-        "watch-webview": "webpack --watch --config webpack.webview.cjs --mode development",
-        "pretest": "npm run compile && npm run lint",
-        "lint": "eslint src --ext ts",
-        "test": "vscode-test"
-    },
-    "devDependencies": {
-        "@babel/core": "^7.27.4",
-        "@babel/preset-env": "^7.27.2",
-        "@babel/preset-react": "^7.27.1",
-        "@babel/preset-typescript": "^7.27.1",
-        "@types/mocha": "^10.0.6",
-        "@types/node": "^18.19.26",
-        "@types/vscode": "^1.80.0",
-        "@typescript-eslint/eslint-plugin": "^7.1.1",
-        "@typescript-eslint/parser": "^7.1.1",
-        "babel-loader": "^10.0.0",
-        "css-loader": "^7.1.2",
-        "css-minimizer-webpack-plugin": "^7.0.2",
-        "eslint": "^8.57.0",
-        "glob": "^10.3.10",
-        "html-webpack-plugin": "^5.6.0",
-        "mini-css-extract-plugin": "^2.9.2",
-        "mocha": "^10.4.0",
-        "style-loader": "^4.0.0",
-        "ts-loader": "^9.5.1",
-        "typescript": "^5.3.3",
-        "vsce": "^2.15.0",
-        "webpack": "^5.91.0",
-        "webpack-cli": "^5.1.4"
-    }
+    "languages": [
+      {
+        "id": "owl",
+        "aliases": [
+          "OWL",
+          "owl"
+        ],
+        "extensions": [
+          ".owl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "owl",
+        "scopeName": "text.xml.owl",
+        "path": "./syntaxes/owl.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "build-webview": "cd webview && npm run build",
+    "dev-webview": "cd webview && npm run start"
+  },
+  "devDependencies": {
+    "@types/node": "16.x",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^5.45.0",
+    "@typescript-eslint/parser": "^5.45.0",
+    "eslint": "^8.28.0",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "fs-extra": "^11.1.0",
+    "lucide-react": "^0.525.0"
+  }
 }
