@@ -3,7 +3,7 @@
   "displayName": "OntoCode OWL Editor",
   "description": "Edit OWL files with authentication and web-based interface",
   "version": "1.0.0",
-  "publisher": "your-publisher-name",
+  "publisher": "self",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -32,6 +32,11 @@
       {
         "command": "ontocode.edit",
         "title": "Edit with OntoCode",
+        "category": "OntoCode"
+      },
+      {
+        "command": "ontocode.logout",
+        "title": "OntoCode: Logout",
         "category": "OntoCode"
       }
     ],
@@ -82,6 +87,7 @@
     "dev-webview": "cd webview && npm run start"
   },
   "devDependencies": {
+    "@types/form-data": "^2.2.1",
     "@types/node": "16.x",
     "@types/vscode": "^1.74.0",
     "@typescript-eslint/eslint-plugin": "^5.45.0",
@@ -90,6 +96,8 @@
     "typescript": "^4.9.4"
   },
   "dependencies": {
+    "axios": "^1.10.0",
+    "form-data": "^4.0.3",
     "fs-extra": "^11.1.0",
     "lucide-react": "^0.525.0"
   }

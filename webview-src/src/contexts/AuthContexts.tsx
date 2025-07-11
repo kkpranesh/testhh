@@ -69,29 +69,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, []);
 
     const checkAuthStatus = async () => {
-        try {
+        // try {
             const token = localStorage.getItem('authToken');
             if (token) {
-                const response = await fetch('http://localhost:8082/api/auth/user', {
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    }
+                setUser({
+                    id: 123,
+                    username: 'pranesh',
+                    email: 'praneshkk1@gmail.com'
                 });
-
-                if (response.ok) {
-                    const userData = await response.json();
-                    setUser(userData.data);
-                } else {
-                    localStorage.removeItem('authToken');
-                }
+                setLoading(false);
             }
-        } catch (error) {
-            console.error('Auth check failed:', error);
-            localStorage.removeItem('authToken');
-        } finally {
-            setLoading(false);
-        }
+            //     const response = await fetch('http://localhost:8082/api/auth/user', {
+            //         headers: {
+            //             'Authorization': `Bearer ${token}`,
+            //             'Content-Type': 'application/json'
+            //         }
+            //     });
+
+            //     if (response.ok) {
+            //         const userData = await response.json();
+            //         setUser(userData.data);
+            //     } else {
+            //         localStorage.removeItem('authToken');
+            //     }
+            // }
+        // } catch (error) {
+        //     console.error('Auth check failed:', error);
+        //     localStorage.removeItem('authToken');
+        // } finally {
+        //     setLoading(false);
+        // }
     };
 
     const login = async (username: string, password: string) => {
