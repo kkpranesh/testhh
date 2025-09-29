@@ -12,7 +12,11 @@ const AppContent = () => {
     const toggleFormView = () => setIsLoginView(!isLoginView);
 
     if (loading) {
-        return <div className="loading">Loading...</div>;
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-gray-100">
+                <div className="text-lg text-gray-600">Loading...</div>
+            </div>
+        );
     }
 
     if (user) {
