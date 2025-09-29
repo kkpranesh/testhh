@@ -1,19 +1,30 @@
+// src/components/SignupForm.tsx
+
 import React, { useState } from 'react';
 import { useAuth } from '../custom-hook/useAuth';
 
-const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
+const SignupForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
     const [username, setUsername] = useState('');
+    const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState('');
-    const { login } = useAuth();
+    const { signup } = useAuth();
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setIsLoading(true);
         setError('');
+
+        if (password !== confirmPassword) {
+            setError("Passwords don't match.");
+            setIsLoading(false);
+            return;
+        }
+
         try {
-            await login(username, password);
+            await signup(username, email, password);
         } catch (error) {
             if (error instanceof Error) {
                 setError(error.message);
@@ -32,7 +43,7 @@ const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
                 <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-indigo-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse delay-1000"></div>
                 <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-80 h-80 bg-pink-500 rounded-full mix-blend-multiply filter blur-xl opacity-20 animate-pulse delay-500"></div>
             </div>
-            
+
             <div className="relative bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl p-8 w-full max-w-md">
                 <div className="flex justify-center mb-8">
                     <div className="w-16 h-16 bg-gradient-to-br from-purple-400 to-indigo-500 rounded-full flex items-center justify-center shadow-lg">
@@ -44,10 +55,10 @@ const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
 
                 <div className="text-center mb-8">
                     <h2 className="text-3xl font-bold text-white mb-2">
-                        Welcome to OntoCode
+                        Create Your OntoCode Account
                     </h2>
                     <p className="text-gray-300">
-                        Sign in to access your account
+                        Sign up to get started
                     </p>
                 </div>
 
@@ -67,49 +78,62 @@ const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
                         <label htmlFor="username" className="block text-sm font-medium text-gray-200 mb-2">
                             Username
                         </label>
-                        <div className="relative">
-                            <input
-                                type="text"
-                                id="username"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                required
-                                disabled={isLoading}
-                                className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-white transition duration-200 backdrop-blur-sm"
-                                placeholder="Enter your username"
-                            />
-                            <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
-                                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                </svg>
-                            </div>
-                        </div>
+                        <input
+                            type="text"
+                            id="username"
+                            value={username}
+                            onChange={(e) => setUsername(e.target.value)}
+                            required
+                            disabled={isLoading}
+                            className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-white transition duration-200 backdrop-blur-sm"
+                            placeholder="Choose a username"
+                        />
                     </div>
-                    
+                    <div>
+                        <label htmlFor="email" className="block text-sm font-medium text-gray-200 mb-2">
+                            Email Address
+                        </label>
+                        <input
+                            type="email"
+                            id="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            required
+                            disabled={isLoading}
+                            className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-white transition duration-200 backdrop-blur-sm"
+                            placeholder="Enter your email"
+                        />
+                    </div>
                     <div>
                         <label htmlFor="password" className="block text-sm font-medium text-gray-200 mb-2">
                             Password
                         </label>
-                        <div className="relative">
-                            <input
-                                type="password"
-                                id="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                required
-                                disabled={isLoading}
-                                className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-white transition duration-200 backdrop-blur-sm"
-                                placeholder="Enter your password"
-                            />
-                            <div className="absolute inset-y-0 right-0 pr-3 flex items-center">
-                                <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                </svg>
-                            </div>
-                        </div>
+                        <input
+                            type="password"
+                            id="password"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            required
+                            disabled={isLoading}
+                            className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-white transition duration-200 backdrop-blur-sm"
+                            placeholder="Enter a strong password"
+                        />
                     </div>
-                    
+                    <div>
+                        <label htmlFor="confirm-password" className="block text-sm font-medium text-gray-200 mb-2">
+                            Confirm Password
+                        </label>
+                        <input
+                            type="password"
+                            id="confirm-password"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            required
+                            disabled={isLoading}
+                            className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-white transition duration-200 backdrop-blur-sm"
+                            placeholder="Re-enter your password"
+                        />
+                    </div>
                     <button
                         type="submit"
                         disabled={isLoading}
@@ -126,11 +150,11 @@ const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
                                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                 </svg>
-                                Signing in...
+                                Signing up...
                             </div>
                         ) : (
                             <div className="flex items-center">
-                                <span>Sign In</span>
+                                <span>Sign Up</span>
                                 <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
                                 </svg>
@@ -138,12 +162,12 @@ const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
                         )}
                     </button>
                 </div>
-                
+
                 <div className="mt-8 text-center">
                     <p className="text-gray-400 text-sm">
-                        Don't have an account?{' '}
+                        Already have an account?{' '}
                         <button onClick={onToggleForm} className="text-purple-400 hover:text-purple-300 font-medium transition-colors">
-                            Sign up
+                            Sign in
                         </button>
                     </p>
                 </div>
@@ -152,4 +176,4 @@ const LoginForm = ({ onToggleForm }: { onToggleForm: () => void }) => {
     );
 };
 
-export default LoginForm;
+export default SignupForm;

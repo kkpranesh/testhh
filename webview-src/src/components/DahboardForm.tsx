@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ChevronRight, ChevronDown, Plus, Home, Search, Settings, X } from 'lucide-react';
+import { ChevronRight, ChevronDown, Plus, Home, Settings, X } from 'lucide-react';
 import apiClient from '../services/apiClient';
 import type { AxiosResponse } from 'axios';
 
@@ -95,20 +95,9 @@ const Dashboard = () => {
 
     const [isCreateClassModalOpen, setCreateClassModalOpen] = useState(false);
     const [parentIdForNewClass, setParentIdForNewClass] = useState<string | null>(null);
-
-    useEffect(() => {
-        const handleMessage = (event: MessageEvent) => {
-            const message = event.data;
-            switch (message.type) {
-                case 'showLoading': setIsLoading(true); break;
-                case 'fileReady': setProjectId(message.projectId); break;
-                case 'loadingFailed': setIsLoading(false); break;
-            }
-        };
-        window.addEventListener('message', handleMessage);
-        if (!projectId) setProjectId("test4");
-        return () => window.removeEventListener('message', handleMessage);
-    }, [projectId]);
+    
+    const [searchQuery, setSearchQuery] = useState<string>('');
+    const [filteredNodes, setFilteredNodes] = useState<TreeNode[]>([]);
 
     const fetchData = useCallback(async () => {
         if (!projectId) {
@@ -130,6 +119,7 @@ const Dashboard = () => {
             if (results[1].status === 'fulfilled') {
                 const treeData = unwrapData(results[1].value) as TreeNode[] || [];
                 setClassHierarchy(treeData);
+                setFilteredNodes(treeData); // Initialize filtered nodes with the full list
                 if (treeData.length > 0 && expandedNodes.length === 0) {
                      setExpandedNodes([treeData[0].id]);
                 }
@@ -143,6 +133,32 @@ const Dashboard = () => {
             setIsLoading(false);
         }
     }, [projectId, expandedNodes.length]);
+
+    // New search handler, debounced for efficiency
+    useEffect(() => {
+        if (!projectId) return;
+
+        const timerId = setTimeout(async () => {
+            if (searchQuery) {
+                setIsLoading(true);
+                try {
+                    const response = await apiClient.get<TreeNode[]>(`/api/ontology/search`, {
+                        params: { projectId, query: searchQuery }
+                    });
+                    setFilteredNodes(response.data);
+                } catch (error) {
+                    console.error("Search failed:", error);
+                    setFilteredNodes([]);
+                } finally {
+                    setIsLoading(false);
+                }
+            } else {
+                setFilteredNodes(classHierarchy); // If search query is empty, show the full tree
+            }
+        }, 300); // 300ms debounce
+
+        return () => clearTimeout(timerId);
+    }, [searchQuery, projectId, classHierarchy]);
 
     useEffect(() => {
         fetchData();
@@ -207,8 +223,9 @@ const Dashboard = () => {
     const renderLeftPanelContent = () => {
         switch (activeTab) {
             case 'Classes':
-                return classHierarchy.length > 0
-                  ? classHierarchy.map(node => renderTreeNode(node))
+                // Use filteredNodes for rendering the class hierarchy
+                return filteredNodes.length > 0
+                  ? filteredNodes.map(node => renderTreeNode(node))
                   : <div className="p-4 text-center text-gray-400">No classes found.</div>;
             case 'Properties':
                 return properties.length > 0 
@@ -231,9 +248,19 @@ const Dashboard = () => {
         }
     };
 
-    if (!projectId && isLoading) {
-        return <div className="flex items-center justify-center h-screen bg-gray-50 text-gray-600"><p className="text-lg">Loading Ontology...</p></div>;
-    }
+    useEffect(() => {
+        const handleMessage = (event: MessageEvent) => {
+            const message = event.data;
+            switch (message.type) {
+                case 'showLoading': setIsLoading(true); break;
+                case 'fileReady': setProjectId(message.projectId); break;
+                case 'loadingFailed': setIsLoading(false); break;
+            }
+        };
+        window.addEventListener('message', handleMessage);
+        if (!projectId) setProjectId("test4");
+        return () => window.removeEventListener('message', handleMessage);
+    }, [projectId]);
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col text-sm">
@@ -265,10 +292,20 @@ const Dashboard = () => {
                     <div className="p-2 border-b border-gray-200">
                         <div className="flex items-center gap-2">
                             <button onClick={handleOpenCreateClassModal} disabled={activeTab !== 'Classes'} className="p-1 hover:bg-gray-200 rounded disabled:opacity-50 disabled:cursor-not-allowed" title="Add New Class"><Plus size={14} /></button>
-                            <button className="p-1 hover:bg-gray-200 rounded" title="Search"><Search size={14} /></button>
                             <button className="p-1 hover:bg-gray-200 rounded" title="Settings"><Settings size={14} /></button>
                         </div>
                     </div>
+                    
+                    <div className="p-4">
+                        <input
+                            type="text"
+                            placeholder="Search classes..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="w-full p-2 border border-gray-300 rounded mb-4"
+                        />
+                    </div>
+                    
                     <div className="flex-1 overflow-y-auto p-2">
                         {isLoading ? <div className='text-center p-4 text-gray-500'>Loading...</div> : renderLeftPanelContent()}
                     </div>
