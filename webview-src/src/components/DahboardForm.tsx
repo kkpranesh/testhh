@@ -397,7 +397,7 @@ const OntologyHeader = ({
 // --- MAIN DASHBOARD COMPONENT ---
 const Dashboard = () => {
   const [isLoading, setIsLoading] = useState(true);
-  const [projectId, setProjectId] = useState<string | null>('test4');
+  const [projectId, setProjectId] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<OntologyMetadata | null>(null);
   const [activeTab, setActiveTab] = useState("Classes");
   const [selectedItem, setSelectedItem] = useState<SelectableItem | null>(null);
@@ -721,6 +721,18 @@ const Dashboard = () => {
       "type" in item;
     const isIndividual = (item: SelectableItem): item is Individual =>
       "types" in item;
+
+    if (!projectId && !isLoading) {
+      return (
+          <div className="min-h-screen flex items-center justify-center bg-gray-100">
+              <div className="text-center text-gray-500">
+                  <FileText size={48} className="mx-auto mb-4" />
+                  <h2 className="text-xl font-semibold">Welcome to OntoCode</h2>
+                  <p className="mt-2">To begin, open an `.owl` file and run the "OntoCode: Edit" command.</p>
+              </div>
+          </div>
+      );
+  }
 
     return (
       <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">

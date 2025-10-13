@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fs from 'fs'; // Import the File System module
 import FormData from 'form-data';
 import axios from 'axios';
 import { insertCitationCommand } from './features/citationInsertion';
@@ -11,10 +11,18 @@ const TOKEN_KEY = 'ontocode.authToken';
 export function activate(context: vscode.ExtensionContext) {
     console.log('OntoCode extension is now active!');
 
-    // Existing commands
-    const disposable = vscode.commands.registerCommand('ontocode.edit', () => {
+    const editDisposable = vscode.commands.registerCommand('ontocode.edit', () => {
         const panel = OntoCodePanel.createOrShow(context.extensionUri, context);
         panel.triggerFileUpload();
+    });
+
+    const editLargeFileDisposable = vscode.commands.registerCommand('ontocode.editLargeFile', (uri: vscode.Uri) => {
+        if (!uri) {
+            vscode.window.showErrorMessage("This command should be run by right-clicking an OWL file in the explorer.");
+            return;
+        }
+        const panel = OntoCodePanel.createOrShow(context.extensionUri, context);
+        panel.triggerLargeFileUpload(uri);
     });
 
     const logoutDisposable = vscode.commands.registerCommand('ontocode.logout', async () => {
@@ -25,19 +33,18 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('You have been successfully logged out.');
     });
 
-    // NEW: Citation commands
     const insertCitationDisposable = vscode.commands.registerCommand(
         'ontocode.insertCitation',
         insertCitationCommand
     );
-
     const citationPickerDisposable = vscode.commands.registerCommand(
         'ontocode.openCitationPicker',
         () => CitationPickerPanel.createOrShow(context.extensionUri)
     );
 
     context.subscriptions.push(
-        disposable, 
+        editDisposable,
+        editLargeFileDisposable,
         logoutDisposable,
         insertCitationDisposable,
         citationPickerDisposable
@@ -45,6 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 class OntoCodePanel {
+
     public static currentPanel: OntoCodePanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
@@ -93,15 +101,16 @@ class OntoCodePanel {
                         break;
                     case 'saveAuthToken':
                         if (message.token) {
-                            console.log('Storing auth token:', message.token);
                             await this._context.secrets.store(TOKEN_KEY, message.token);
-                            vscode.window.showInformationMessage('Auth token stored.');
-                            this.triggerFileUpload();
+                            vscode.window.showInformationMessage('Authentication successful.');
                         }
                         return;
                     case 'requestAuthToken':
                         const token = await this._context.secrets.get(TOKEN_KEY);
                         this.postMessage({ type: 'storedAuthToken', token: token || null });
+                        return;
+                    case 'logout':
+                        await this._context.secrets.delete(TOKEN_KEY);
                         return;
                 }
             },
@@ -113,14 +122,59 @@ class OntoCodePanel {
     public postMessage(message: any) {
         this._panel.webview.postMessage(message);
     }
+    
+    public async triggerLargeFileUpload(fileUri: vscode.Uri) {
+        console.log(`Triggering large file upload for: ${fileUri.fsPath}`);
+        
+        const token = await this._context.secrets.get(TOKEN_KEY);
+        if (!token) {
+            vscode.window.showErrorMessage("You must be logged in to process an ontology.");
+            this.postMessage({ type: 'showLogin' });
+            return;
+        }
+
+        this.postMessage({ type: 'showLoading' });
+
+        const filePath = fileUri.fsPath;
+        const fileName = path.basename(filePath);
+        const projectId = path.basename(fileName, '.owl');
+
+        try {
+            const fileStream = fs.createReadStream(filePath);
+            const formData = new FormData();
+            
+            formData.append('file', fileStream, fileName);
+            formData.append('projectId', projectId);
+
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                ...formData.getHeaders()
+            };
+
+            await axios.post('http://localhost:8082/api/ontology/load', formData, { headers });
+
+            this.postMessage({ type: 'fileReady', projectId: projectId });
+
+        } catch (e: any) {
+            const errorMessage = e.response?.data?.error || e.message || 'An unknown error occurred';
+            console.error('Error trying to load large ontology on backend:', e);
+            vscode.window.showErrorMessage(`Failed to load large ontology on backend: ${errorMessage}`);
+            this.postMessage({ type: 'loadingFailed' });
+        }
+    }
 
     public async triggerFileUpload() {
         console.log('Triggering file upload...');
-        const activeEditor = vscode.window.activeTextEditor;
-        if (!activeEditor || !activeEditor.document.fileName.endsWith('.owl')) {
-            vscode.window.showWarningMessage("To upload, please make sure an .owl file is the active editor tab.");
+        
+        const targetEditor = this.findBestOwlEditor();
+
+        if (!targetEditor) {
+            vscode.window.showWarningMessage("No active or visible .owl file found. Please click inside the ontology file you wish to edit and try again.");
             return;
         }
+
+        await vscode.window.showTextDocument(targetEditor.document, targetEditor.viewColumn);
+        console.log(`Found and focused target editor: ${targetEditor.document.fileName}`);
 
         const token = await this._context.secrets.get(TOKEN_KEY);
         if (!token) {
@@ -131,30 +185,57 @@ class OntoCodePanel {
 
         this.postMessage({ type: 'showLoading' });
         
-        const fileContent = activeEditor.document.getText();
-        const projectId = path.basename(activeEditor.document.fileName, '.owl');
+        const fileContent = targetEditor.document.getText();
+        const fileName = path.basename(targetEditor.document.fileName);
+        const projectId = path.basename(fileName, '.owl');
         try {
             const formData = new FormData();
-            // const fileBlob = new Blob([fileContent], { type: 'application/octet-stream' });
-            formData.append('file', fileContent, path.basename(activeEditor.document.fileName));
+            
+            const fileBuffer = Buffer.from(fileContent, 'utf-8');
+            formData.append('file', fileBuffer, fileName);
             formData.append('projectId', projectId);
-            await axios.post('http://localhost:8082/api/ontology/load', formData, {
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                }
-            });
+
+            const headers = {
+                'Authorization': `Bearer ${token}`,
+                ...formData.getHeaders()
+            };
+
+            await axios.post('http://localhost:8082/api/ontology/load', formData, { headers });
+
             this.postMessage({ type: 'fileReady', projectId: projectId });
-        } catch (e) {
-            console.log(e, 'error trying to load ontology on backend');
-            vscode.window.showErrorMessage(`Failed to load ontology on backend: ${e}`);
+        } catch (e: any) {
+            const errorMessage = e.response?.data?.error || e.message || 'An unknown error occurred';
+            console.error('Error trying to load ontology on backend:', e);
+            vscode.window.showErrorMessage(`Failed to load ontology on backend: ${errorMessage}`);
             this.postMessage({ type: 'loadingFailed' });
         }
     }
-    
+
+    private findBestOwlEditor(): vscode.TextEditor | undefined {
+        const validExtensions = ['.owl'];
+
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor) {
+            const fileNameLower = activeEditor.document.fileName.toLowerCase();
+            if (validExtensions.some(ext => fileNameLower.endsWith(ext))) {
+                return activeEditor;
+            }
+        }
+
+        for (const editor of vscode.window.visibleTextEditors) {
+            const fileNameLower = editor.document.fileName.toLowerCase();
+            if (validExtensions.some(ext => fileNameLower.endsWith(ext))) {
+                return editor;
+            }
+        }
+        
+        return undefined;
+    }
+
     private _update() {
         this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
     }
-
+    
     private _getHtmlForWebview(webview: vscode.Webview): string {
         const buildPath = vscode.Uri.joinPath(this._extensionUri, 'webview-src', 'dist');
         const indexPath = vscode.Uri.joinPath(buildPath, 'index.html');
