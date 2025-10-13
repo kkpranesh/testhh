@@ -3,28 +3,45 @@ import * as path from 'path';
 import * as fs from 'fs';
 import FormData from 'form-data';
 import axios from 'axios';
+import { insertCitationCommand } from './features/citationInsertion';
+import { CitationPickerPanel } from './webview/citationPicker';
 
 const TOKEN_KEY = 'ontocode.authToken';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('OntoCode extension is now active!');
 
+    // Existing commands
     const disposable = vscode.commands.registerCommand('ontocode.edit', () => {
         const panel = OntoCodePanel.createOrShow(context.extensionUri, context);
         panel.triggerFileUpload();
     });
 
-     const logoutDisposable = vscode.commands.registerCommand('ontocode.logout', async () => {
+    const logoutDisposable = vscode.commands.registerCommand('ontocode.logout', async () => {
         await context.secrets.delete(TOKEN_KEY);
-
         if (OntoCodePanel.currentPanel) {
             OntoCodePanel.currentPanel.dispose();
         }
-
         vscode.window.showInformationMessage('You have been successfully logged out.');
     });
 
-    context.subscriptions.push(disposable, logoutDisposable);
+    // NEW: Citation commands
+    const insertCitationDisposable = vscode.commands.registerCommand(
+        'ontocode.insertCitation',
+        insertCitationCommand
+    );
+
+    const citationPickerDisposable = vscode.commands.registerCommand(
+        'ontocode.openCitationPicker',
+        () => CitationPickerPanel.createOrShow(context.extensionUri)
+    );
+
+    context.subscriptions.push(
+        disposable, 
+        logoutDisposable,
+        insertCitationDisposable,
+        citationPickerDisposable
+    );
 }
 
 class OntoCodePanel {

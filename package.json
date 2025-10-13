@@ -20,6 +20,9 @@
     "knowledge graph"
   ],
   "main": "./out/extension.js",
+  "extensionDependencies": [
+    "SelfResearchInstitute.sci2code"
+  ],
   "contributes": {
     "webviews": [
       {
@@ -38,6 +41,11 @@
         "command": "ontocode.logout",
         "title": "OntoCode: Logout",
         "category": "OntoCode"
+      },
+      {
+        "command": "ontocode.insertCitation",
+        "title": "Insert Citation",
+        "category": "OntoCode"
       }
     ],
     "menus": {
@@ -53,8 +61,23 @@
           "when": "resourceExtname == .owl",
           "group": "navigation"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "ontocode.insertCitation",
+          "when": "resourceExtname =~ /\\.(owl|ttl|rdf|n3)$/",
+          "group": "ontocode"
+        }
       ]
     },
+    "keybindings": [
+      {
+        "command": "ontocode.insertCitation",
+        "key": "ctrl+shift+c",
+        "mac": "cmd+shift+c",
+        "when": "editorTextFocus && resourceExtname =~ /\\.(owl|ttl|rdf|n3)$/"
+      }
+    ],
     "languages": [
       {
         "id": "owl",
