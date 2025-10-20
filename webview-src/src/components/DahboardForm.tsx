@@ -10,7 +10,7 @@ interface TreeNode {
   id: string;
   label: string;
   annotations?: Record<string, string>;
-  children?: TreeNode[] | null;  // null = leaf, [] = not loaded, [...] = loaded
+  children?: TreeNode[] | null;
 }
 
 interface Property {
@@ -211,7 +211,6 @@ const EnhancedDashboard = () => {
         }
       } catch (error: unknown) {
         console.error('Error polling status:', error);
-        // Narrow unknown to an object with an optional response.status before accessing it
         if (typeof error === 'object' && error !== null && 'response' in error) {
           const err = error as { response?: { status?: number } };
           if (err.response?.status === 404 && attempts < 10) {
@@ -391,69 +390,154 @@ const EnhancedDashboard = () => {
   }, [allTopLevelClasses, searchQuery, entitiesTab]);
 
   useEffect(() => {
-    if (!searchQuery) {
-      switch(entitiesTab) {
-        case "Classes": 
-          setFilteredData(classHierarchy); 
-          break;
-        case "ObjectProperties": 
-          setFilteredData(showHierarchicalView && objectPropertyHierarchy.length > 0 
-            ? objectPropertyHierarchy 
-            : objectProperties);
-          break;
-        case "DataProperties": 
-          setFilteredData(showHierarchicalView && dataPropertyHierarchy.length > 0 
-            ? dataPropertyHierarchy 
-            : dataProperties);
-          break;
-        case "AnnotationProperties": 
-          setFilteredData(annotationProperties); 
-          break;
-        case "Datatypes": 
-          setFilteredData(datatypes); 
-          break;
-        case "Individuals": 
-          setFilteredData(individuals); 
-          break;
-      }
+  if (!searchQuery) {
+    switch(entitiesTab) {
+      case "Classes": 
+        setFilteredData(classHierarchy); 
+        break;
+      case "ObjectProperties": 
+        setFilteredData(showHierarchicalView && objectPropertyHierarchy.length > 0 
+          ? objectPropertyHierarchy 
+          : objectProperties);
+        break;
+      case "DataProperties": 
+        setFilteredData(showHierarchicalView && dataPropertyHierarchy.length > 0 
+          ? dataPropertyHierarchy 
+          : dataProperties);
+        break;
+      case "AnnotationProperties": 
+        setFilteredData(annotationProperties); 
+        break;
+      case "Datatypes": 
+        setFilteredData(datatypes); 
+        break;
+      case "Individuals": 
+        setFilteredData(individuals); 
+        break;
+    }
+    return;
+  }
+
+  const debounce = setTimeout(() => {
+    const lowercasedQuery = searchQuery.toLowerCase();
+    
+    if (entitiesTab === "Classes") {
+      const searchTreeRecursive = (nodes: TreeNode[]): TreeNode[] => {
+        const results: TreeNode[] = [];
+        
+        for (const node of nodes) {
+          const nodeMatches = node.label?.toLowerCase().includes(lowercasedQuery);
+          
+          const matchingChildren = node.children 
+            ? searchTreeRecursive(node.children) 
+            : [];
+          
+          if (nodeMatches || matchingChildren.length > 0) {
+            results.push({
+              ...node,
+              children: matchingChildren.length > 0 ? matchingChildren : node.children
+            });
+          }
+        }
+        
+        return results;
+      };
+      
+      const searchResults = searchTreeRecursive(classHierarchy);
+      setFilteredData(searchResults);
+      
+      const expandedIds: string[] = [];
+      const collectExpandedIds = (nodes: TreeNode[]) => {
+        nodes.forEach(node => {
+          if (node.children && node.children.length > 0) {
+            expandedIds.push(node.id);
+            collectExpandedIds(node.children);
+          }
+        });
+      };
+      collectExpandedIds(searchResults);
+      setExpandedNodes(expandedIds);
+      
       return;
     }
-
-    const debounce = setTimeout(() => {
-      const lowercasedQuery = searchQuery.toLowerCase();
-      let sourceData: SelectableItem[] = [];
+    
+    if ((entitiesTab === "ObjectProperties" || entitiesTab === "DataProperties") 
+        && showHierarchicalView) {
       
-      switch(entitiesTab) {
-        case "Classes": 
-          sourceData = classHierarchy; 
-          break;
-        case "ObjectProperties": 
-          sourceData = objectProperties; 
-          break;
-        case "DataProperties": 
-          sourceData = dataProperties; 
-          break;
-        case "AnnotationProperties": 
-          sourceData = annotationProperties; 
-          break;
-        case "Datatypes": 
-          sourceData = datatypes; 
-          break;
-        case "Individuals": 
-          sourceData = individuals; 
-          break;
-      }
+      const searchPropertyTree = (properties: Property[]): Property[] => {
+        const results: Property[] = [];
+        
+        for (const prop of properties) {
+          const propMatches = prop.label?.toLowerCase().includes(lowercasedQuery);
+          const matchingChildren = prop.children 
+            ? searchPropertyTree(prop.children) 
+            : [];
+          
+          if (propMatches || matchingChildren.length > 0) {
+            results.push({
+              ...prop,
+              children: matchingChildren.length > 0 ? matchingChildren : prop.children
+            });
+          }
+        }
+        
+        return results;
+      };
       
-      const results = sourceData.filter(item => 
-        item.label?.toLowerCase().includes(lowercasedQuery)
-      );
-      setFilteredData(results);
-    }, 300);
+      const sourceHierarchy = entitiesTab === "ObjectProperties" 
+        ? objectPropertyHierarchy 
+        : dataPropertyHierarchy;
+      
+      const searchResults = searchPropertyTree(sourceHierarchy);
+      setFilteredData(searchResults);
+      
+      const expandedIds: string[] = [];
+      const collectIds = (props: Property[]) => {
+        props.forEach(prop => {
+          if (prop.children && prop.children.length > 0) {
+            expandedIds.push(prop.id);
+            collectIds(prop.children);
+          }
+        });
+      };
+      collectIds(searchResults);
+      setExpandedNodes(expandedIds);
+      
+      return;
+    }
+    
+    let sourceData: SelectableItem[] = [];
+    
+    switch(entitiesTab) {
+      case "ObjectProperties": 
+        sourceData = objectProperties; 
+        break;
+      case "DataProperties": 
+        sourceData = dataProperties; 
+        break;
+      case "AnnotationProperties": 
+        sourceData = annotationProperties; 
+        break;
+      case "Datatypes": 
+        sourceData = datatypes; 
+        break;
+      case "Individuals": 
+        sourceData = individuals; 
+        break;
+    }
+    
+    const results = sourceData.filter(item => 
+      item.label?.toLowerCase().includes(lowercasedQuery) ||
+      item.id?.toLowerCase().includes(lowercasedQuery)
+    );
+    
+    setFilteredData(results);
+  }, 300);
 
-    return () => clearTimeout(debounce);
-  }, [searchQuery, entitiesTab, classHierarchy, objectProperties, dataProperties, 
-      annotationProperties, individuals, datatypes, objectPropertyHierarchy, 
-      dataPropertyHierarchy, showHierarchicalView]);
+  return () => clearTimeout(debounce);
+}, [searchQuery, entitiesTab, classHierarchy, objectProperties, dataProperties, 
+    annotationProperties, individuals, datatypes, objectPropertyHierarchy, 
+    dataPropertyHierarchy, showHierarchicalView]);
 
   const handleScroll = useCallback(() => {
     const container = classListRef.current;
@@ -471,7 +555,7 @@ const EnhancedDashboard = () => {
     const container = classListRef.current;
     if (!container) return;
     
-    container.addEventListener('scroll', handleScroll);
+    container.addEventListener('scroll', handleScroll, { passive: true });
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
@@ -1093,6 +1177,17 @@ const EnhancedDashboard = () => {
                       className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
                     />
                   </div>
+                  {searchQuery && filteredData.length > 0 && (
+                    <div className="text-xs text-gray-500 px-2">
+                      Found {filteredData.length} result{filteredData.length !== 1 ? 's' : ''}
+                    </div>
+                  )}
+
+                  {searchQuery && filteredData.length === 0 && (
+                    <div className="text-xs text-gray-400 px-2 italic">
+                      No results found for "{searchQuery}"
+                    </div>
+                  )}
                 </div>
                 
                 <div 
