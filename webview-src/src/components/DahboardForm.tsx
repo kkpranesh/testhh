@@ -1,41 +1,35 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  ChevronRight,
-  ChevronDown,
-  Plus,
-  Settings,
-  X,
-  Search,
-  FileText,
-  Info,
-  BarChart3,
-  Eye,
-  Filter,
-  Upload,
-  RefreshCw,
+  ChevronRight, ChevronDown, Plus, Settings, Search, FileText,
+  BarChart3, Eye, Filter, Upload, RefreshCw, Database, Tag, Link2,
+  Share2, List, Code, Loader2
 } from "lucide-react";
 import apiClient from "../services/apiClient";
 
-// --- TYPE DEFINITIONS ---
 interface TreeNode {
   id: string;
   label: string;
   annotations?: Record<string, string>;
-  children?: TreeNode[];
+  children?: TreeNode[] | null;  // null = leaf, [] = not loaded, [...] = loaded
 }
 
 interface Property {
   id: string;
+  iri: string;
   label: string;
   type: string;
   annotations?: Record<string, string>;
   domains?: string[];
   ranges?: string[];
   characteristics?: string[];
+  superProperties?: string[];
+  subProperties?: string[];
+  children?: Property[];
 }
 
 interface Individual {
   id: string;
+  iri: string;
   label: string;
   annotations?: Record<string, string>;
   types?: string[];
@@ -43,7 +37,19 @@ interface Individual {
   differentFrom?: string[];
 }
 
-type SelectableItem = TreeNode | Property | Individual;
+interface AnnotationProperty {
+  id: string;
+  iri: string;
+  label: string;
+  annotations?: Record<string, string>;
+}
+
+interface Datatype {
+  id: string;
+  iri: string;
+  label: string;
+  annotations?: Record<string, string>;
+}
 
 interface OntologyMetadata {
   filename: string;
@@ -54,426 +60,505 @@ interface OntologyMetadata {
   dataPropertyCount: number;
   individualCount: number;
   axiomCount: number;
+  annotations?: Record<string, string>;
 }
 
-interface CreateClassModalProps {
-  onClose: () => void;
-  onCreate: (className: string, parentId: string | null) => void;
-  parentId: string | null;
-}
+type SelectableItem = TreeNode | Property | Individual | AnnotationProperty | Datatype;
 
-interface UploadModalProps {
-  onClose: () => void;
-  onUpload: (file: File) => void;
-}
-
-// --- HELPER COMPONENT FOR ANNOTATION RENDERING ---
 const AnnotationValue = ({ value }: { value: string }) => {
-  const xmlLiteralTag = "^^rdf:XMLLiteral";
   let cleanedValue = value.toString();
   if (cleanedValue.startsWith('"')) cleanedValue = cleanedValue.substring(1);
-  if (cleanedValue.endsWith(`"${xmlLiteralTag}`)) {
-    cleanedValue = cleanedValue.slice(0, -`"${xmlLiteralTag}`.length);
-  } else if (cleanedValue.endsWith('"')) {
-    cleanedValue = cleanedValue.slice(0, -1);
+  if (cleanedValue.endsWith('"^^xsd:string') || cleanedValue.endsWith('"')) {
+    cleanedValue = cleanedValue.replace(/"\^\^xsd:string$/, '').replace(/"$/, '');
   }
-
   const isMathML = /<mathml:math/i.test(cleanedValue);
-
   if (isMathML) {
-    return <div dangerouslySetInnerHTML={{ __html: cleanedValue }} />;
+    return <div dangerouslySetInnerHTML={{ __html: cleanedValue }} className="text-sm" />;
   }
+  return <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">{cleanedValue}</p>;
+};
 
+const AnnotationsDisplay = ({ annotations }: { annotations?: Record<string, string> }) => {
+  if (!annotations || Object.keys(annotations).length === 0) {
+    return <p className="text-sm text-gray-400 italic">No annotations</p>;
+  }
+  const annotationOrder = ['label', 'definition', 'comment', 'IAO_0000115', 'IAO_0000111'];
+  const sortedAnnotations = Object.entries(annotations).sort(([keyA], [keyB]) => {
+    const indexA = annotationOrder.indexOf(keyA);
+    const indexB = annotationOrder.indexOf(keyB);
+    if (indexA === -1 && indexB === -1) return keyA.localeCompare(keyB);
+    if (indexA === -1) return 1;
+    if (indexB === -1) return -1;
+    return indexA - indexB;
+  });
+  const getLabelColor = (key: string) => {
+    if (key === 'label' || key === 'IAO_0000111') return 'bg-purple-100 text-purple-800';
+    if (key === 'definition' || key === 'IAO_0000115') return 'bg-blue-100 text-blue-800';
+    if (key === 'comment') return 'bg-green-100 text-green-800';
+    return 'bg-gray-100 text-gray-800';
+  };
   return (
-    <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap">
-      {cleanedValue}
-    </p>
+    <div className="space-y-4">
+      {sortedAnnotations.map(([key, value]) => (
+        <div key={key} className="border-l-4 border-purple-500 pl-4 py-2 bg-gray-50 rounded-r">
+          <div className={`inline-block text-xs font-semibold px-2 py-1 rounded mb-2 ${getLabelColor(key)}`}>
+            {key.replace(/([A-Z])/g, ' $1').replace(/^./, (str) => str.toUpperCase()).replace('rdfs', 'rdfs:')}
+          </div>
+          <AnnotationValue value={value} />
+        </div>
+      ))}
+    </div>
   );
 };
 
-// --- UPLOAD MODAL ---
-const UploadModal = ({ onClose, onUpload }: UploadModalProps) => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [dragActive, setDragActive] = useState(false);
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setSelectedFile(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setSelectedFile(e.target.files[0]);
-    }
-  };
-
-  const handleSubmit = () => {
-    if (selectedFile) {
-      onUpload(selectedFile);
-      onClose();
-    }
-  };
-
+const LoadingDialog = ({ isOpen, message }: { isOpen: boolean; message?: string }) => {
+  if (!isOpen) return null;
+  
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                 {" "}
-      <div className="bg-white rounded-lg p-6 w-[500px] shadow-xl">
-                       {" "}
-        <h3 className="text-lg font-semibold mb-4">Upload Ontology File</h3>   
-                                    {" "}
-        <div
-          className={`border-2 border-dashed rounded-lg p-8 text-center ${
-            dragActive ? "border-purple-500 bg-purple-50" : "border-gray-300"
-          }`}
-          onDragEnter={handleDrag}
-          onDragLeave={handleDrag}
-          onDragOver={handleDrag}
-          onDrop={handleDrop}
-        >
-                             {" "}
-          <Upload className="mx-auto mb-4 text-gray-400" size={48} />           
-                 {" "}
-          <p className="text-sm text-gray-600 mb-2">
-                                    Drag and drop your OWL file here, or        
-                       {" "}
+      <div className="bg-white rounded-lg shadow-xl p-8 max-w-sm w-full mx-4">
+        <div className="flex flex-col items-center">
+          <Loader2 size={48} className="text-purple-600 animate-spin mb-4" />
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">
+            {message || "Loading Ontology"}
+          </h3>
+          <p className="text-sm text-gray-500 text-center">
+            Please wait while we fetch your ontology data...
           </p>
-                             {" "}
-          <label className="cursor-pointer">
-                                   {" "}
-            <span className="text-purple-600 hover:text-purple-700 font-medium">
-              browse
-            </span>
-                                   {" "}
-            <input
-              type="file"
-              className="hidden"
-              accept=".owl,.rdf,.xml,.ttl,.n3,.nt"
-              onChange={handleChange}
-            />
-                               {" "}
-          </label>
-                             {" "}
-          <p className="text-xs text-gray-500 mt-2">
-                                    Supported formats: .owl, .rdf, .xml, .ttl,
-            .n3, .nt                    {" "}
-          </p>
-                         {" "}
         </div>
-                       {" "}
-        {selectedFile && (
-          <div className="mt-4 p-3 bg-gray-50 rounded flex items-center justify-between">
-                                   {" "}
-            <div className="flex items-center gap-2">
-                                         {" "}
-              <FileText size={16} className="text-gray-600" />                 
-                       {" "}
-              <span className="text-sm text-gray-700">{selectedFile.name}</span>
-                                     {" "}
-            </div>
-                                   {" "}
-            <button
-              onClick={() => setSelectedFile(null)}
-              className="text-gray-400 hover:text-gray-600"
-            >
-                                          <X size={16} />                       {" "}
-            </button>
-                               {" "}
-          </div>
-        )}
-                       {" "}
-        <div className="flex justify-end gap-2 mt-6">
-                             {" "}
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded text-gray-600 bg-gray-100 hover:bg-gray-200"
-          >
-                                    Cancel                    {" "}
-          </button>
-                             {" "}
-          <button
-            onClick={handleSubmit}
-            disabled={!selectedFile}
-            className="px-4 py-2 rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-                                    Upload                    {" "}
-          </button>
-                         {" "}
-        </div>
-                   {" "}
       </div>
-             {" "}
     </div>
   );
 };
 
-// --- CREATE CLASS MODAL ---
-const CreateClassModal = ({
-  onClose,
-  onCreate,
-  parentId,
-}: CreateClassModalProps) => {
-  const [className, setClassName] = useState("");
-  const handleSubmit = () => {
-    if (className.trim()) {
-      onCreate(className.trim(), parentId);
-      onClose();
+const EnhancedDashboard = () => {
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<OntologyMetadata | null>(null);
+  const [mainTab, setMainTab] = useState("Entities");
+  const [entitiesTab, setEntitiesTab] = useState("Classes");
+  const [selectedItem, setSelectedItem] = useState<SelectableItem | null>(null);
+  const [expandedNodes, setExpandedNodes] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isInitialLoading, setIsInitialLoading] = useState(false);
+
+  const [classHierarchy, setClassHierarchy] = useState<TreeNode[]>([]);
+  const [objectProperties, setObjectProperties] = useState<Property[]>([]);
+  const [dataProperties, setDataProperties] = useState<Property[]>([]);
+  const [annotationProperties, setAnnotationProperties] = useState<AnnotationProperty[]>([]);
+  const [individuals, setIndividuals] = useState<Individual[]>([]);
+  const [datatypes, setDatatypes] = useState<Datatype[]>([]);
+  const [filteredData, setFilteredData] = useState<(TreeNode | Property | AnnotationProperty | Datatype | Individual)[]>([]);
+  
+  const [objectPropertyHierarchy, setObjectPropertyHierarchy] = useState<Property[]>([]);
+  const [dataPropertyHierarchy, setDataPropertyHierarchy] = useState<Property[]>([]);
+  const [showHierarchicalView, setShowHierarchicalView] = useState(true);
+
+  // Infinite scroll state
+  const [topLevelPage, setTopLevelPage] = useState(0);
+  const [topLevelHasMore, setTopLevelHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [allTopLevelClasses, setAllTopLevelClasses] = useState<TreeNode[]>([]);
+  
+  const classListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      const message = event.data;
+      switch (message.type) {
+        case "showLoading":
+          setIsInitialLoading(true);
+          break;
+        case "fileReady":
+          setProjectId(message.projectId);
+          pollProcessingStatus(message.projectId);
+          break;
+        case "loadingFailed":
+          setIsInitialLoading(false);
+          break;
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  const pollProcessingStatus = useCallback(async (projectId: string) => {
+    const maxAttempts = 60;
+    let attempts = 0;
+
+    const poll = async (): Promise<void> => {
+      try {
+        const response = await apiClient.get(`/api/ontology/status/${projectId}`);
+        const status = response.data.data?.status;
+
+        console.log(`[Poll ${attempts + 1}/${maxAttempts}] Status:`, status);
+
+        if (status === 'COMPLETED') {
+          console.log('Processing completed, fetching data...');
+          setIsInitialLoading(false);
+          await fetchData();
+          return;
+        } else if (status === 'ERROR') {
+          setIsInitialLoading(false);
+          const errorMsg = response.data.data?.statusMessage || 'Processing failed';
+          console.error('Processing failed:', errorMsg);
+          return;
+        } else if (attempts < maxAttempts) {
+          attempts++;
+          setTimeout(poll, 5000);
+        } else {
+          setIsInitialLoading(false);
+          console.error('Processing timeout');
+        }
+      } catch (error: unknown) {
+        console.error('Error polling status:', error);
+        // Narrow unknown to an object with an optional response.status before accessing it
+        if (typeof error === 'object' && error !== null && 'response' in error) {
+          const err = error as { response?: { status?: number } };
+          if (err.response?.status === 404 && attempts < 10) {
+            attempts++;
+            setTimeout(poll, 2000);
+            return;
+          }
+        }
+        setIsInitialLoading(false);
+      }
+    };
+
+    poll();
+  }, []);
+
+  const loadTopLevelClasses = useCallback(async (page: number, append: boolean = false) => {
+    if (!projectId || isLoadingMore) return;
+    
+    setIsLoadingMore(true);
+    
+    try {
+      const response = await apiClient.get(`/api/ontology/classes/top-level/${projectId}`, {
+        params: { page, size: 100 }
+      });
+      
+      const { classes, hasMore } = response.data;
+
+      const treeNodes: TreeNode[] = classes.map((c: { id: string; label: string; annotations?: Record<string, string>; hasChildren: boolean; }) => ({
+        id: c.id,
+        label: c.label,
+        annotations: c.annotations,
+        children: c.hasChildren ? [] : null
+      }));
+      
+      if (append) {
+        setAllTopLevelClasses(prev => [...prev, ...treeNodes]);
+      } else {
+        setAllTopLevelClasses(treeNodes);
+      }
+      
+      setTopLevelHasMore(hasMore);
+      setTopLevelPage(page);
+      
+    } catch (error) {
+      console.error('Failed to load top-level classes:', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [projectId, isLoadingMore]);
+
+  const loadChildren = async (nodeId: string): Promise<TreeNode[]> => {
+    if (!projectId) return [];
+    
+    try {
+      const response = await apiClient.get(`/api/ontology/classes/children/${projectId}`, {
+        params: { parentIri: nodeId }
+      });
+      
+      return response.data || [];
+    } catch (error) {
+      console.error('Failed to load children:', error);
+      return [];
     }
   };
 
-  return (
-    <div
-      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-      onClick={onClose}
-    >
-                 {" "}
-      <div
-        className="bg-white rounded-lg p-6 w-96 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-                       {" "}
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">
-          Create New Class
-        </h3>
-                       {" "}
-        {parentId && (
-          <div className="mb-3 p-2 bg-gray-50 rounded">
-                                   {" "}
-            <p className="text-xs text-gray-500 mb-1">Parent Class:</p>         
-                         {" "}
-            <p className="font-mono text-xs text-gray-700 break-all">
-              {parentId}
-            </p>
-                               {" "}
-          </div>
-        )}
-                       {" "}
-        <input
-          type="text"
-          value={className}
-          onChange={(e) => setClassName(e.target.value)}
-          onKeyPress={(e) =>
-            e.key === "Enter" && className.trim() && handleSubmit()
+  const fetchData = useCallback(async () => {
+    if (!projectId) return;
+    
+    setIsInitialLoading(true);
+    setSelectedItem(null);
+    setSearchQuery("");
+    setTopLevelPage(0);
+    setTopLevelHasMore(true);
+    setAllTopLevelClasses([]);
+
+    try {
+      const [
+        metadataRes, 
+        topLevelRes,
+        propertiesRes, 
+        individualsRes, 
+        annotationPropsRes, 
+        datatypesRes,
+        objPropHierarchyRes,
+        dataPropHierarchyRes
+      ] = await Promise.allSettled([
+        apiClient.get(`/api/ontology/metadata/${projectId}`),
+        apiClient.get(`/api/ontology/classes/top-level/${projectId}`, { params: { page: 0, size: 100 } }),
+        apiClient.get(`/api/ontology/properties/${projectId}`),
+        apiClient.get(`/api/ontology/individuals/${projectId}`),
+        apiClient.get(`/api/ontology/annotation-properties/${projectId}`),
+        apiClient.get(`/api/ontology/datatypes/${projectId}`),
+        apiClient.get(`/api/ontology/object-properties/tree/${projectId}`),
+        apiClient.get(`/api/ontology/data-properties/tree/${projectId}`)
+      ]);
+
+      if (metadataRes.status === 'fulfilled' && metadataRes.value.data?.data) {
+        setMetadata(metadataRes.value.data.data.metadata || metadataRes.value.data.data);
+      }
+
+      if (topLevelRes.status === 'fulfilled' && topLevelRes.value.data) {
+        const { classes, hasMore } = topLevelRes.value.data;
+
+        const topLevelNodes: TreeNode[] = classes.map((c: { id: string; label: string; annotations?: Record<string, string>; hasChildren: boolean; }) => ({
+          id: c.id,
+          label: c.label,
+          annotations: c.annotations,
+          children: c.hasChildren ? [] : null
+        }));
+        
+        setAllTopLevelClasses(topLevelNodes);
+        setTopLevelHasMore(hasMore);
+        
+        const owlThingNode: TreeNode = {
+          id: 'http://www.w3.org/2002/07/owl#Thing',
+          label: 'owl:Thing',
+          children: topLevelNodes,
+          annotations: {}
+        };
+        
+        setClassHierarchy([owlThingNode]);
+        setFilteredData([owlThingNode]);
+        setExpandedNodes([owlThingNode.id]);
+      }
+
+      if (propertiesRes.status === 'fulfilled' && propertiesRes.value.data?.data) {
+        const allProps = propertiesRes.value.data.data || [];
+        setObjectProperties(allProps.filter((p: Property) => p.type === 'ObjectProperty'));
+        setDataProperties(allProps.filter((p: Property) => p.type === 'DataProperty'));
+      }
+
+      if (individualsRes.status === 'fulfilled' && individualsRes.value.data?.data) {
+        setIndividuals(individualsRes.value.data.data || []);
+      }
+
+      if (annotationPropsRes.status === 'fulfilled' && annotationPropsRes.value.data?.data) {
+        setAnnotationProperties(annotationPropsRes.value.data.data || []);
+      }
+
+      if (datatypesRes.status === 'fulfilled' && datatypesRes.value.data?.data) {
+        setDatatypes(datatypesRes.value.data.data || []);
+      }
+
+      if (objPropHierarchyRes.status === 'fulfilled' && objPropHierarchyRes.value.data) {
+        setObjectPropertyHierarchy(objPropHierarchyRes.value.data);
+      }
+
+      if (dataPropHierarchyRes.status === 'fulfilled' && dataPropHierarchyRes.value.data) {
+        setDataPropertyHierarchy(dataPropHierarchyRes.value.data);
+      }
+
+    } catch (error) {
+      console.error("Failed to fetch data:", error);
+    } finally {
+      setIsInitialLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    if (allTopLevelClasses.length > 0 && entitiesTab === "Classes") {
+      const owlThingNode: TreeNode = {
+        id: 'http://www.w3.org/2002/07/owl#Thing',
+        label: 'owl:Thing',
+        children: allTopLevelClasses,
+        annotations: {}
+      };
+      
+      setClassHierarchy([owlThingNode]);
+      if (!searchQuery) {
+        setFilteredData([owlThingNode]);
+      }
+    }
+  }, [allTopLevelClasses, searchQuery, entitiesTab]);
+
+  useEffect(() => {
+    if (!searchQuery) {
+      switch(entitiesTab) {
+        case "Classes": 
+          setFilteredData(classHierarchy); 
+          break;
+        case "ObjectProperties": 
+          setFilteredData(showHierarchicalView && objectPropertyHierarchy.length > 0 
+            ? objectPropertyHierarchy 
+            : objectProperties);
+          break;
+        case "DataProperties": 
+          setFilteredData(showHierarchicalView && dataPropertyHierarchy.length > 0 
+            ? dataPropertyHierarchy 
+            : dataProperties);
+          break;
+        case "AnnotationProperties": 
+          setFilteredData(annotationProperties); 
+          break;
+        case "Datatypes": 
+          setFilteredData(datatypes); 
+          break;
+        case "Individuals": 
+          setFilteredData(individuals); 
+          break;
+      }
+      return;
+    }
+
+    const debounce = setTimeout(() => {
+      const lowercasedQuery = searchQuery.toLowerCase();
+      let sourceData: SelectableItem[] = [];
+      
+      switch(entitiesTab) {
+        case "Classes": 
+          sourceData = classHierarchy; 
+          break;
+        case "ObjectProperties": 
+          sourceData = objectProperties; 
+          break;
+        case "DataProperties": 
+          sourceData = dataProperties; 
+          break;
+        case "AnnotationProperties": 
+          sourceData = annotationProperties; 
+          break;
+        case "Datatypes": 
+          sourceData = datatypes; 
+          break;
+        case "Individuals": 
+          sourceData = individuals; 
+          break;
+      }
+      
+      const results = sourceData.filter(item => 
+        item.label?.toLowerCase().includes(lowercasedQuery)
+      );
+      setFilteredData(results);
+    }, 300);
+
+    return () => clearTimeout(debounce);
+  }, [searchQuery, entitiesTab, classHierarchy, objectProperties, dataProperties, 
+      annotationProperties, individuals, datatypes, objectPropertyHierarchy, 
+      dataPropertyHierarchy, showHierarchicalView]);
+
+  const handleScroll = useCallback(() => {
+    const container = classListRef.current;
+    if (!container || !topLevelHasMore || isLoadingMore || entitiesTab !== "Classes") return;
+    
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
+    
+    if (scrollPercentage > 0.8) {
+      loadTopLevelClasses(topLevelPage + 1, true);
+    }
+  }, [topLevelHasMore, isLoadingMore, topLevelPage, loadTopLevelClasses, entitiesTab]);
+
+  useEffect(() => {
+    const container = classListRef.current;
+    if (!container) return;
+    
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
+
+  const toggleNode = async (nodeId: string) => {
+    if (expandedNodes.includes(nodeId)) {
+      setExpandedNodes((prev) => prev.filter((id) => id !== nodeId));
+    } else {
+      const findNode = (nodes: TreeNode[], id: string): TreeNode | null => {
+        for (const node of nodes) {
+          if (node.id === id) return node;
+          if (node.children) {
+            const found = findNode(node.children, id);
+            if (found) return found;
           }
-          className="w-full border border-gray-300 rounded px-3 py-2 focus:ring-2 focus:ring-purple-500 focus:outline-none text-gray-900"
-          placeholder="Enter class name"
-          autoFocus
-        />
-                       {" "}
-        <div className="flex justify-end gap-3 mt-6">
-                             {" "}
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded text-gray-700 bg-gray-100 hover:bg-gray-200 font-medium transition-colors"
-          >
-                                    Cancel                    {" "}
-          </button>
-                             {" "}
-          <button
-            onClick={handleSubmit}
-            disabled={!className.trim()}
-            className="px-4 py-2 rounded bg-purple-600 text-white hover:bg-purple-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-                                    Create                    {" "}
-          </button>
-                         {" "}
-        </div>
-                   {" "}
-      </div>
-             {" "}
-    </div>
-  );
-};
-
-// --- METRICS PANEL ---
-const MetricsPanel = ({ metadata }: { metadata: OntologyMetadata | null }) => {
-  if (!metadata) return null;
-  const metrics = [
-    { label: "Classes", value: metadata.classCount },
-    { label: "Object Properties", value: metadata.objectPropertyCount },
-    { label: "Data Properties", value: metadata.dataPropertyCount },
-    { label: "Individuals", value: metadata.individualCount },
-    { label: "Axioms", value: metadata.axiomCount },
-  ];
-  return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4">
-                 {" "}
-      <div className="flex items-center gap-2 mb-3">
-                        <BarChart3 size={16} className="text-purple-600" />     
-                  <h3 className="font-semibold text-sm">Ontology Metrics</h3>   
-               {" "}
-      </div>
-                 {" "}
-      <div className="space-y-2">
-                       {" "}
-        {metrics.map((metric) => (
-          <div
-            key={metric.label}
-            className="flex justify-between items-center text-sm"
-          >
-                                   {" "}
-            <span className="text-gray-600">{metric.label}</span>               
-                   {" "}
-            <span className="font-semibold text-gray-900">
-              {metric.value.toLocaleString()}
-            </span>
-                               {" "}
-          </div>
-        ))}
-                   {" "}
-      </div>
-             {" "}
-    </div>
-  );
-};
-
-// --- ONTOLOGY HEADER INFO ---
-const OntologyHeader = ({
-  metadata,
-}: {
-  metadata: OntologyMetadata | null;
-}) => {
-  if (!metadata) return null;
-  return (
-    <div className="bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-200 rounded-lg p-4 mb-4">
-                 {" "}
-      <div className="flex items-start gap-3">
-                       {" "}
-        <div className="mt-1">
-                              <Info size={20} className="text-purple-600" />   
-                     {" "}
-        </div>
-                       {" "}
-        <div className="flex-1 space-y-2">
-                             {" "}
-          <div>
-                                   {" "}
-            <h3 className="text-xs font-semibold text-purple-900 uppercase">
-              Ontology IRI
-            </h3>
-                                   {" "}
-            <p className="text-sm text-purple-700 break-all">
-              {metadata.ontologyIRI || "Not specified"}
-            </p>
-                               {" "}
-          </div>
-                             {" "}
-          {metadata.versionIRI && (
-            <div>
-                                         {" "}
-              <h3 className="text-xs font-semibold text-purple-900 uppercase">
-                Version IRI
-              </h3>
-                                         {" "}
-              <p className="text-sm text-purple-700 break-all">
-                {metadata.versionIRI}
-              </p>
-                                     {" "}
-            </div>
-          )}
-                         {" "}
-        </div>
-                   {" "}
-      </div>
-             {" "}
-    </div>
-  );
-};
-
-
-// --- MAIN DASHBOARD COMPONENT ---
-const Dashboard = () => {
-  const [isLoading, setIsLoading] = useState(true);
-  const [projectId, setProjectId] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<OntologyMetadata | null>(null);
-  const [activeTab, setActiveTab] = useState("Classes");
-  const [selectedItem, setSelectedItem] = useState<SelectableItem | null>(null);
-  const [expandedNodes, setExpandedNodes] = useState<string[]>([]);
-
-  const [classHierarchy, setClassHierarchy] = useState<TreeNode[]>([]);
-  const [properties, setProperties] = useState<Property[]>([]);
-  const [individuals, setIndividuals] = useState<Individual[]>([]);
-
-  const [isCreateClassModalOpen, setCreateClassModalOpen] = useState(false);
-  const [parentIdForNewClass, setParentIdForNewClass] = useState<string | null>(
-    null
-  );
-
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [filteredNodes, setFilteredNodes] = useState<TreeNode[]>([]);
-  const [showMetrics, setShowMetrics] = useState(true);
-  const [isUploadModalOpen, setUploadModalOpen] = useState(false);
-
- 
-  const tabs = [
-    {
-      id: "Classes",
-      label: "Classes",
-      icon: FileText,
-      count: metadata?.classCount,
-    },
-    {
-      id: "Properties",
-      label: "Properties",
-      icon: Settings,
-      count: metadata
-        ? metadata.objectPropertyCount + metadata.dataPropertyCount
-        : null,
-    },
-    {
-      id: "Individuals",
-      label: "Individuals",
-      icon: Eye,
-      count: metadata?.individualCount,
-    },
-  ];
-
-  const toggleNode = (nodeId: string) => {
-    setExpandedNodes((prev) =>
-      prev.includes(nodeId)
-        ? prev.filter((id) => id !== nodeId)
-        : [...prev, nodeId]
-    );
+        }
+        return null;
+      };
+      
+      const node = findNode(classHierarchy, nodeId);
+      
+      if (node && node.children && node.children.length === 0) {
+        const children = await loadChildren(nodeId);
+        
+        if (children.length > 0) {
+          const updateTree = (nodes: TreeNode[]): TreeNode[] => {
+            return nodes.map(n => {
+              if (n.id === nodeId) {
+                return { ...n, children };
+              }
+              if (n.children) {
+                return { ...n, children: updateTree(n.children) };
+              }
+              return n;
+            });
+          };
+          
+          setClassHierarchy(updateTree(classHierarchy));
+          setFilteredData(updateTree(filteredData as TreeNode[]));
+        }
+      }
+      
+      setExpandedNodes((prev) => [...prev, nodeId]);
+    }
   };
 
-  const renderTreeNode = (node: TreeNode, level = 0) => {
-    const hasChildren = node.children && node.children.length > 0;
+  const mainTabs = [
+    { id: "ActiveOntology", label: "Active ontology", icon: FileText },
+    { id: "Entities", label: "Entities", icon: List },
+    { id: "IndividualsByClass", label: "Individuals by class", icon: Eye },
+    { id: "DLQuery", label: "DL Query", icon: Code }
+  ];
+
+  const entitiesTabs = [
+    { id: "Classes", label: "Classes", icon: FileText, count: metadata?.classCount },
+    { id: "ObjectProperties", label: "Object properties", icon: Share2, count: metadata?.objectPropertyCount },
+    { id: "DataProperties", label: "Data properties", icon: Database, count: metadata?.dataPropertyCount },
+    { id: "AnnotationProperties", label: "Annotation properties", icon: Tag, count: annotationProperties.length || null },
+    { id: "Datatypes", label: "Datatypes", icon: Settings, count: datatypes.length || null },
+    { id: "Individuals", label: "Individuals", icon: Eye, count: metadata?.individualCount }
+  ];
+
+  const renderTreeNode = (node: TreeNode, level = 0): JSX.Element => {
+    const hasChildren = node.children !== null;
     const isExpanded = expandedNodes.includes(node.id);
     const isSelected = selectedItem?.id === node.id;
+    const isLoading = hasChildren && Array.isArray(node.children) && node.children.length === 0 && isExpanded;
 
     return (
       <div key={node.id}>
         <div
           className={`flex items-center px-2 py-1.5 rounded cursor-pointer transition-colors ${
-            isSelected
-              ? "bg-purple-100 border-l-2 border-purple-600"
-              : "hover:bg-gray-50"
+            isSelected ? "bg-purple-100 border-l-2 border-purple-600" : "hover:bg-gray-50"
           }`}
           style={{ paddingLeft: `${level * 20 + 8}px` }}
           onClick={() => setSelectedItem(node)}
         >
           {hasChildren ? (
-            <button
-              className="p-0.5 rounded hover:bg-gray-200 mr-1"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleNode(node.id);
+            <button 
+              className="p-0.5 rounded hover:bg-gray-200 mr-1" 
+              onClick={(e) => { 
+                e.stopPropagation(); 
+                toggleNode(node.id); 
               }}
             >
-              {isExpanded ? (
+              {isLoading ? (
+                <Loader2 size={14} className="animate-spin text-purple-600" />
+              ) : isExpanded ? (
                 <ChevronDown size={14} />
               ) : (
                 <ChevronRight size={14} />
@@ -482,227 +567,222 @@ const Dashboard = () => {
           ) : (
             <span className="w-[22px]" />
           )}
-          <span
-            className={`text-sm ${
-              isSelected ? "text-purple-900 font-medium" : "text-gray-700"
-            }`}
-          >
+          <span className={`text-sm ${isSelected ? "text-purple-900 font-medium" : "text-gray-700"}`}>
             {node.label}
           </span>
         </div>
-        {hasChildren &&
-          isExpanded &&
-          node.children?.map((child) => renderTreeNode(child, level + 1))}
+        {hasChildren && isExpanded && node.children && node.children.length > 0 && 
+          node.children.map((child) => renderTreeNode(child, level + 1))
+        }
       </div>
     );
   };
 
-  const handleCreateClass = async (
-    className: string,
-    parentId: string | null
-  ) => {
-    if (!projectId) return;
-    setIsLoading(true);
-    try {
-      await apiClient.post(`/api/ontology/${projectId}/classes`, {
-        name: className,
-        parentId,
-      });
-      await fetchData();
-    } catch (error) {
-      console.error("Failed to create class:", error);
-    } finally {
-      setIsLoading(false);
-    }
+  const renderPropertyTreeNode = (property: Property, level = 0): JSX.Element => {
+    const hasChildren = property.children && property.children.length > 0;
+    const isExpanded = expandedNodes.includes(property.id);
+    const isSelected = selectedItem?.id === property.id;
+
+    return (
+      <div key={property.id}>
+        <div
+          className={`flex items-center px-2 py-1.5 rounded cursor-pointer transition-colors ${
+            isSelected ? "bg-purple-100 border-l-2 border-purple-600" : "hover:bg-gray-50"
+          }`}
+          style={{ paddingLeft: `${level * 20 + 8}px` }}
+          onClick={() => setSelectedItem(property)}
+        >
+          {hasChildren ? (
+            <button 
+              className="p-0.5 rounded hover:bg-gray-200 mr-1" 
+              onClick={(e) => { 
+                e.stopPropagation(); 
+                toggleNode(property.id); 
+              }}
+            >
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </button>
+          ) : (
+            <span className="w-[22px]" />
+          )}
+          
+          <span className={`text-xs px-1.5 py-0.5 rounded mr-2 ${
+            property.type === 'ObjectProperty' 
+              ? 'bg-blue-100 text-blue-700' 
+              : 'bg-green-100 text-green-700'
+          }`}>
+            {property.type === 'ObjectProperty' ? 'OP' : 'DP'}
+          </span>
+          
+          <span className={`text-sm ${
+            isSelected ? "text-purple-900 font-medium" : "text-gray-700"
+          }`}>
+            {property.label}
+          </span>
+          
+          {property.characteristics && property.characteristics.length > 0 && (
+            <span className="ml-2 text-xs text-gray-500">
+              {property.characteristics.slice(0, 2).join(', ')}
+              {property.characteristics.length > 2 && '...'}
+            </span>
+          )}
+        </div>
+        
+        {hasChildren && isExpanded && property.children?.map((child) => 
+          renderPropertyTreeNode(child, level + 1)
+        )}
+      </div>
+    );
   };
 
-  const renderLeftPanelContent = () => {
-    switch (activeTab) {
-      case "Classes":
-        return filteredNodes.length > 0 ? (
-          filteredNodes.map((node) => renderTreeNode(node))
-        ) : (
-          <div className="p-4 text-center text-gray-400">No classes found</div>
-        );
-      case "Properties":
-        return properties.length > 0 ? (
-          properties.map((prop) => (
-            <div
-              key={prop.id}
-              className={`flex items-center px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${
-                selectedItem?.id === prop.id
-                  ? "bg-purple-100 border-l-2 border-purple-600"
-                  : ""
-              }`}
-              onClick={() => setSelectedItem(prop)}
-            >
-              <span
-                className={`text-sm ${
-                  selectedItem?.id === prop.id
-                    ? "text-purple-900 font-medium"
-                    : "text-gray-700"
-                }`}
-              >
-                {prop.label}
-              </span>
-              <span className="ml-2 text-xs text-gray-400">({prop.type})</span>
-            </div>
-          ))
-        ) : (
-          <div className="p-4 text-center text-gray-400">
-            No properties found
-          </div>
-        );
-      case "Individuals":
-        return individuals.length > 0 ? (
-          individuals.map((ind) => (
-            <div
-              key={ind.id}
-              className={`px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${
-                selectedItem?.id === ind.id
-                  ? "bg-purple-100 border-l-2 border-purple-600"
-                  : ""
-              }`}
-              onClick={() => setSelectedItem(ind)}
-            >
-              <span
-                className={`text-sm ${
-                  selectedItem?.id === ind.id
-                    ? "text-purple-900 font-medium"
-                    : "text-gray-700"
-                }`}
-              >
-                {ind.label}
-              </span>
-            </div>
-          ))
-        ) : (
-          <div className="p-4 text-center text-gray-400">
-            No individuals found
-          </div>
-        );
-      default:
-        return (
-          <div className="p-4 text-center text-gray-400">Not implemented</div>
-        );
+  const renderEntitiesContent = () => {
+
+    if (filteredData.length === 0) {
+      return <div className="p-4 text-center text-gray-400">No {entitiesTab.toLowerCase()} found</div>;
     }
+
+    if (entitiesTab === "Classes") {
+      return filteredData.map((node) => renderTreeNode(node as TreeNode));
+    }
+
+    if ((entitiesTab === "ObjectProperties" || entitiesTab === "DataProperties") 
+        && showHierarchicalView 
+        && !searchQuery) {
+      return filteredData.map((property) => 
+        renderPropertyTreeNode(property as Property)
+      );
+    }
+
+    return filteredData.map((item) => (
+      <div
+        key={item.id}
+        className={`flex items-center px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${
+          selectedItem?.id === item.id ? "bg-purple-100 border-l-2 border-purple-600" : ""
+        }`}
+        onClick={() => setSelectedItem(item)}
+      >
+        {('type' in item && item.type) && (
+          <span className={`text-xs px-1.5 py-0.5 rounded mr-2 ${
+            item.type === 'ObjectProperty' 
+              ? 'bg-blue-100 text-blue-700' 
+              : item.type === 'DataProperty'
+              ? 'bg-green-100 text-green-700'
+              : 'bg-gray-100 text-gray-700'
+          }`}>
+            {item.type === 'ObjectProperty' ? 'OP' : item.type === 'DataProperty' ? 'DP' : item.type}
+          </span>
+        )}
+        
+        <span className={`text-sm ${
+          selectedItem?.id === item.id ? "text-purple-900 font-medium" : "text-gray-700"
+        }`}>
+          {item.label}
+        </span>
+      </div>
+    ));
   };
 
-  // Fetch all data
-  const fetchData = useCallback(async () => {
-    if (!projectId) return;
-
-    setIsLoading(true);
-    try {
-      const [metadataRes, classesRes, propsRes, indsRes] =
-        await Promise.allSettled([
-          apiClient.get(`/api/ontology/metadata/${projectId}`),
-          apiClient.get(`/api/ontology/classes/tree/${projectId}`),
-          apiClient.get(`/api/ontology/properties/${projectId}`),
-          apiClient.get(`/api/ontology/individuals/${projectId}`),
-        ]);
-
-      if (metadataRes.status === "fulfilled" && metadataRes.value.data) {
-        setMetadata(metadataRes.value.data.data?.metadata || null);
-      }
-
-      if (classesRes.status === "fulfilled" && classesRes.value.data) {
-        setClassHierarchy(classesRes.value.data || []);
-        setFilteredNodes(classesRes.value.data || []);
-        if (classesRes.value.data && classesRes.value.data.length > 0) {
-          setExpandedNodes([classesRes.value.data[0].id]);
-        }
-      }
-
-      if (propsRes.status === "fulfilled" && propsRes.value.data) {
-        setProperties(propsRes.value.data.data || []);
-      }
-
-      if (indsRes.status === "fulfilled" && indsRes.value.data) {
-        setIndividuals(indsRes.value.data.data || []);
-      }
-    } catch (error) {
-      console.error("Failed to fetch data:", error);
-    } finally {
-      setIsLoading(false);
+  const renderMainContent = () => {
+    if (mainTab === "ActiveOntology") {
+      return (
+        <div className="flex h-full">
+          <div className="flex-1 flex flex-col bg-white border-r border-gray-200">
+            <div className="border-b border-gray-200 bg-purple-50">
+              <div className="px-4 py-2 bg-purple-600 text-white text-xs font-semibold">Ontology header:</div>
+              <div className="p-4 space-y-3">
+                <div>
+                  <div className="text-sm font-semibold mb-1">Ontology IRI</div>
+                  <a href={metadata?.ontologyIRI || "#"} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-sm break-all">
+                    {metadata?.ontologyIRI || "Not specified"}
+                  </a>
+                </div>
+                <div>
+                  <div className="text-sm font-semibold mb-1">Ontology Version IRI</div>
+                  <div className="text-sm text-gray-700 break-all">{metadata?.versionIRI || "Not specified"}</div>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700">Annotations</h3>
+                <button className="w-6 h-6 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center">
+                  <Plus size={14} className="text-gray-600" />
+                </button>
+              </div>
+              {metadata?.annotations && Object.keys(metadata.annotations).length > 0 ? (
+                <div className="space-y-4">
+                  {Object.entries(metadata.annotations).map(([key, value]) => (
+                    <div key={key} className="border-b border-gray-200 pb-3">
+                      <div className="font-semibold text-sm mb-1">{key}</div>
+                      <div className="text-sm text-gray-700">{value}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400 italic">No annotations</p>
+              )}
+            </div>
+            <div className="border-t border-gray-200 bg-gray-50">
+              <div className="flex text-xs">
+                <button className="px-4 py-2 font-medium border-r border-gray-300 bg-white text-gray-900">Ontology imports</button>
+                <button className="px-4 py-2 font-medium border-r border-gray-300 bg-gray-100 text-gray-600 hover:bg-gray-200">Ontology Prefixes</button>
+                <button className="px-4 py-2 font-medium bg-gray-100 text-gray-600 hover:bg-gray-200">General class axioms</button>
+              </div>
+              <div className="bg-white p-4 min-h-24 border-t border-gray-200">
+                <p className="text-sm text-gray-400 italic">No direct imports</p>
+              </div>
+            </div>
+          </div>
+          <div className="w-96 bg-white">
+            <div className="px-4 py-2 bg-purple-600 text-white text-xs font-semibold border-b border-purple-700">Ontology metrics:</div>
+            <div className="p-4">
+              <h3 className="font-semibold mb-4 text-sm">Metrics</h3>
+              <div className="space-y-2 text-xs">
+                <div className="flex justify-between"><span className="text-gray-600">Axiom</span><span className="font-semibold">{metadata?.axiomCount.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-gray-600">Class count</span><span className="font-semibold">{metadata?.classCount.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-gray-600">Object property count</span><span className="font-semibold">{metadata?.objectPropertyCount.toLocaleString()}</span></div>
+                <div className="flex justify-between"><span className="text-gray-600">Data property count</span><span className="font-semibold">{metadata?.dataPropertyCount}</span></div>
+                <div className="flex justify-between"><span className="text-gray-600">Individual count</span><span className="font-semibold">{metadata?.individualCount}</span></div>
+                <div className="flex justify-between"><span className="text-gray-600">Annotation Property count</span><span className="font-semibold">{annotationProperties.length}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
     }
-  }, [projectId]);
 
-  // Search handler with debouncing
-  useEffect(() => {
-    if (!projectId) return;
-
-    const timerId = setTimeout(async () => {
-      if (searchQuery) {
-        setIsLoading(true);
-        try {
-          const response = await apiClient.get<TreeNode[]>(
-            `/api/ontology/search`,
-            {
-              params: { projectId, query: searchQuery },
-            }
-          );
-          setFilteredNodes(response.data);
-        } catch (error) {
-          console.error("Search failed:", error);
-          setFilteredNodes([]);
-        } finally {
-          setIsLoading(false);
-        }
-      } else {
-        setFilteredNodes(classHierarchy);
-      }
-    }, 300);
-
-    return () => clearTimeout(timerId);
-  }, [searchQuery, projectId, classHierarchy]);
-
-  // Handle initial data load or project changes
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      const message = event.data;
-      switch (message.type) {
-        case "showLoading":
-          setIsLoading(true);
-          break;
-        case "fileReady":
-          setProjectId(message.projectId);
-          break;
-        case "loadingFailed":
-          setIsLoading(false);
-          break;
-      }
-    };
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, []);
-
-  useEffect(() => {
-    if (projectId) {
-      fetchData();
+    if (mainTab === "IndividualsByClass") {
+      return (
+        <div className="h-full flex items-center justify-center">
+          <div className="text-center text-gray-400">
+            <Eye size={48} className="mx-auto mb-3 opacity-50" />
+            <p className="text-lg">Individuals by Class</p>
+            <p className="text-sm mt-2">Browse individuals organized by their types</p>
+          </div>
+        </div>
+      );
     }
-  }, [projectId, fetchData]);
 
-  // Handler for the upload modal
-  const handleUpload = async (file: File) => {
-    if (!projectId) return;
-    setIsLoading(true);
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("projectId", projectId);
-
-    try {
-      await apiClient.post(`/api/ontology/load`, formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-      await fetchData();
-    } catch (error) {
-      console.error("Upload failed:", error);
-    } finally {
-      setIsLoading(false);
+    if (mainTab === "DLQuery") {
+      return (
+        <div className="h-full p-6">
+          <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+            <h3 className="text-lg font-bold mb-4">DL Query</h3>
+            <textarea className="w-full h-32 border border-gray-300 rounded-lg p-3 font-mono text-sm" placeholder="Enter DL query..." />
+            <div className="flex gap-2 mt-4">
+              <button className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">Execute</button>
+              <button className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 text-sm">Add to ontology</button>
+            </div>
+            <div className="mt-6">
+              <h4 className="font-semibold mb-2 text-sm">Query results</h4>
+              <div className="border border-gray-300 rounded-lg p-4 bg-gray-50 min-h-32 text-sm text-gray-400">No results</div>
+            </div>
+          </div>
+        </div>
+      );
     }
+
+    return null;
   };
 
   const renderSelectedItemDetails = () => {
@@ -717,356 +797,337 @@ const Dashboard = () => {
       );
     }
 
-    const isProperty = (item: SelectableItem): item is Property =>
-      "type" in item;
-    const isIndividual = (item: SelectableItem): item is Individual =>
-      "types" in item;
-
-    if (!projectId && !isLoading) {
-      return (
-          <div className="min-h-screen flex items-center justify-center bg-gray-100">
-              <div className="text-center text-gray-500">
-                  <FileText size={48} className="mx-auto mb-4" />
-                  <h2 className="text-xl font-semibold">Welcome to OntoCode</h2>
-                  <p className="mt-2">To begin, open an `.owl` file and run the "OntoCode: Edit" command.</p>
-              </div>
-          </div>
-      );
-  }
+    const isProperty = (item: SelectableItem): item is Property => {
+      return "type" in item && ("domains" in item || "ranges" in item);
+    };
+    
+    const isIndividual = (item: SelectableItem): item is Individual => {
+      return "types" in item && !("domains" in item);
+    };
 
     return (
-      <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
-        <div className="mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-2">
-            {selectedItem.label}
-          </h2>
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            <span className="font-medium">IRI:</span>
-            <code className="bg-gray-100 px-2 py-1 rounded text-purple-700 break-all">
-              {selectedItem.id}
-            </code>
+      <div className="space-y-6">
+        <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+          <h2 className="text-2xl font-bold text-gray-900 mb-3">{selectedItem.label}</h2>
+          <div className="flex items-start gap-2 text-xs">
+            <Link2 size={14} className="text-gray-400 mt-0.5" />
+            <code className="bg-gray-100 px-3 py-1.5 rounded text-purple-700 break-all flex-1">{selectedItem.id}</code>
           </div>
+          
+          {isProperty(selectedItem) && (
+            <div className="mt-3">
+              <span className={`inline-block text-xs px-3 py-1 rounded-full font-medium ${
+                selectedItem.type === 'ObjectProperty' 
+                  ? 'bg-blue-100 text-blue-800' 
+                  : 'bg-green-100 text-green-800'
+              }`}>
+                {selectedItem.type}
+              </span>
+            </div>
+          )}
         </div>
 
-        {selectedItem.annotations &&
-          Object.keys(selectedItem.annotations).length > 0 && (
-            <>
-              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
-                Annotations
-              </h3>
-              <div className="space-y-4">
-                {Object.entries(selectedItem.annotations).map(
-                  ([key, value]) => (
-                    <div
-                      key={key}
-                      className="border-l-2 border-purple-500 pl-4"
-                    >
-                      <div className="text-xs font-semibold text-purple-900 mb-1">
-                        {key
-                          .replace(/([A-Z])/g, " $1")
-                          .replace("rdfs", "rdfs:")
-                          .replace(/^./, (str) => str.toUpperCase())}
-                      </div>
-                      <AnnotationValue value={value} />
-                    </div>
-                  )
-                )}
-              </div>
-            </>
-          )}
+        <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+          <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-4 flex items-center gap-2">
+            <Tag size={16} className="text-purple-600" />
+            Annotations
+          </h3>
+          <AnnotationsDisplay annotations={selectedItem.annotations} />
+        </div>
 
         {isProperty(selectedItem) && (
           <>
+            {selectedItem.superProperties && selectedItem.superProperties.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
+                  Super Properties
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {selectedItem.superProperties.map((superProp, i) => (
+                    <span 
+                      key={i} 
+                      className="text-xs bg-indigo-100 text-indigo-800 px-3 py-1.5 rounded-full font-medium"
+                    >
+                      {superProp.split('#').pop() || superProp}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selectedItem.subProperties && selectedItem.subProperties.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
+                  Sub Properties
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {selectedItem.subProperties.map((subProp, i) => (
+                    <span 
+                      key={i} 
+                      className="text-xs bg-pink-100 text-pink-800 px-3 py-1.5 rounded-full font-medium"
+                    >
+                      {subProp.split('#').pop() || subProp}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {selectedItem.domains && selectedItem.domains.length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
                   Domains
                 </h3>
                 <div className="flex flex-wrap gap-2">
                   {selectedItem.domains.map((domain, i) => (
-                    <span
-                      key={i}
-                      className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded"
+                    <span 
+                      key={i} 
+                      className="text-xs bg-blue-100 text-blue-800 px-3 py-1.5 rounded-full font-medium"
                     >
-                      {domain}
+                      {domain.split('#').pop() || domain}
                     </span>
                   ))}
                 </div>
               </div>
             )}
+
             {selectedItem.ranges && selectedItem.ranges.length > 0 && (
-              <div className="mt-4">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
                   Ranges
                 </h3>
                 <div className="flex flex-wrap gap-2">
                   {selectedItem.ranges.map((range, i) => (
-                    <span
-                      key={i}
-                      className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded"
+                    <span 
+                      key={i} 
+                      className="text-xs bg-green-100 text-green-800 px-3 py-1.5 rounded-full font-medium"
                     >
-                      {range}
+                      {range.split('#').pop() || range}
                     </span>
                   ))}
                 </div>
               </div>
             )}
-            {selectedItem.characteristics &&
-              selectedItem.characteristics.length > 0 && (
-                <div className="mt-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
-                    Characteristics
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedItem.characteristics.map((char, i) => (
-                      <span
-                        key={i}
-                        className="text-xs bg-purple-100 text-purple-800 px-2 py-1 rounded"
-                      >
-                        {char}
-                      </span>
-                    ))}
-                  </div>
+
+            {selectedItem.characteristics && selectedItem.characteristics.length > 0 && (
+              <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+                <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
+                  Characteristics
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {selectedItem.characteristics.map((char, i) => (
+                    <span 
+                      key={i} 
+                      className="text-xs bg-purple-100 text-purple-800 px-3 py-1.5 rounded-full font-medium"
+                    >
+                      {char}
+                    </span>
+                  ))}
                 </div>
-              )}
+              </div>
+            )}
           </>
         )}
 
-        {isIndividual(selectedItem) && (
-          <>
-            {selectedItem.types && selectedItem.types.length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
-                  Types
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {selectedItem.types.map((type, i) => (
-                    <span
-                      key={i}
-                      className="text-xs bg-indigo-100 text-indigo-800 px-2 py-1 rounded"
-                    >
-                      {type}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            {selectedItem.sameAs && selectedItem.sameAs.length > 0 && (
-              <div className="mt-4">
-                <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
-                  Same As
-                </h3>
-                <div className="flex flex-wrap gap-2">
-                  {selectedItem.sameAs.map((id, i) => (
-                    <span
-                      key={i}
-                      className="text-xs bg-pink-100 text-pink-800 px-2 py-1 rounded"
-                    >
-                      {id}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            {selectedItem.differentFrom &&
-              selectedItem.differentFrom.length > 0 && (
-                <div className="mt-4">
-                  <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
-                    Different From
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedItem.differentFrom.map((id, i) => (
-                      <span
-                        key={i}
-                        className="text-xs bg-red-100 text-red-800 px-2 py-1 rounded"
-                      >
-                        {id}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-          </>
+        {isIndividual(selectedItem) && selectedItem.types && selectedItem.types.length > 0 && (
+          <div className="bg-white rounded-lg border border-gray-200 p-6 shadow-sm">
+            <h3 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">
+              Types
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {selectedItem.types.map((type, i) => (
+                <span 
+                  key={i} 
+                  className="text-xs bg-indigo-100 text-indigo-800 px-3 py-1.5 rounded-full font-medium"
+                >
+                  {type.split('#').pop() || type}
+                </span>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     );
   };
 
+  if (!projectId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="text-center text-gray-500 p-8">
+          <div className="w-20 h-20 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg mx-auto mb-6">
+            <FileText size={40} className="text-white" />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-3">Welcome to OntoCode</h2>
+          <div className="flex items-center justify-center gap-2 text-purple-600">
+            <Loader2 size={20} className="animate-spin" />
+            <p className="text-sm">Initializing...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col text-sm">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shadow-sm">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-indigo-600 rounded flex items-center justify-center shadow-md">
-              <FileText size={16} className="text-white" />
-            </div>
-            <div>
-              <div className="text-sm font-semibold text-gray-800">
-                {projectId}
+    <>
+      <LoadingDialog isOpen={isInitialLoading} message="Loading Ontology Data" />
+      
+      <div className="min-h-screen bg-gray-50 flex flex-col text-sm">
+        <header className="bg-white border-b border-gray-200 px-6 py-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg flex items-center justify-center shadow-md">
+                <FileText size={20} className="text-white" />
               </div>
-              <div className="text-xs text-gray-500">
-                {metadata?.filename || "No file loaded"}
+              <div>
+                <h1 className="text-lg font-bold text-gray-800">{metadata?.filename || "Ontology Editor"}</h1>
+                <p className="text-xs text-gray-500">{projectId}</p>
               </div>
             </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setUploadModalOpen(true)}
-            className="flex items-center gap-1.5 text-xs text-white bg-purple-600 hover:bg-purple-700 px-3 py-1.5 rounded transition-colors"
-          >
-            <Upload size={14} />
-            <span>Upload</span>
-          </button>
-          <button
-            onClick={fetchData}
-            className="flex items-center gap-1.5 text-xs text-gray-600 hover:bg-gray-100 px-3 py-1.5 rounded transition-colors"
-          >
-            <RefreshCw size={14} />
-            <span>Refresh</span>
-          </button>
-          <button
-            onClick={() => setShowMetrics(!showMetrics)}
-            className="flex items-center gap-1.5 text-xs text-gray-600 hover:bg-gray-100 px-3 py-1.5 rounded transition-colors"
-          >
-            <BarChart3 size={14} />
-            <span>Metrics</span>
-          </button>
-        </div>
-      </header>
-
-      {/* Tabs */}
-      <nav className="bg-white border-b border-gray-200 px-4 flex items-center shadow-sm">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === tab.id
-                  ? "text-purple-600 border-purple-600"
-                  : "text-gray-600 hover:text-gray-800 border-transparent hover:border-gray-300"
-              }`}
-              onClick={() => {
-                setActiveTab(tab.id);
-                setSelectedItem(null);
-              }}
-            >
-              <Icon size={16} />
-              {tab.label}
-              {tab.count != null && tab.count > 0 && (
-                <span className="bg-gray-200 text-gray-700 text-xs font-bold px-2 py-0.5 rounded-full">
-                  {tab.count}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* Main Content Area */}
-      <main className="flex flex-1 overflow-hidden">
-        {/* Left Sidebar */}
-        <aside className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-sm">
-          <div className="p-3 border-b border-gray-200 bg-gray-50">
-            <div className="flex items-center gap-2 mb-3">
-              <button
-                onClick={() => {
-                  const parentId =
-                    selectedItem && "children" in selectedItem
-                      ? selectedItem.id
-                      : null;
-                  setParentIdForNewClass(parentId);
-                  setCreateClassModalOpen(true);
-                }}
-                disabled={activeTab !== "Classes"}
-                className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium transition-colors"
-                title="Add New Class"
-              >
-                <Plus size={14} />
-                <span>New Class</span>
+            <div className="flex items-center gap-3">
+              <button className="flex items-center gap-2 text-xs text-white bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg transition-colors shadow-sm">
+                <Upload size={14} />
+                Upload
               </button>
-              <button
-                className="p-1.5 hover:bg-gray-200 rounded transition-colors"
-                title="Filter"
-              >
-                <Filter size={14} className="text-gray-600" />
+              <button onClick={fetchData} className="flex items-center gap-2 text-xs text-gray-600 hover:bg-gray-100 px-4 py-2 rounded-lg transition-colors">
+                <RefreshCw size={14} />
+                Refresh
+              </button>
+              <button className="flex items-center gap-2 text-xs text-gray-600 hover:bg-gray-100 px-4 py-2 rounded-lg transition-colors">
+                <BarChart3 size={14} />
+                Metrics
               </button>
             </div>
-
-            <div className="relative">
-              <Search
-                size={14}
-                className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"
-              />
-              <input
-                type="text"
-                placeholder={`Search ${activeTab.toLowerCase()}...`}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
-              />
-            </div>
           </div>
+        </header>
 
-          <div className="flex-1 overflow-y-auto p-2">
-            {isLoading ? (
-              <div className="text-center p-4 text-gray-500">Loading...</div>
-            ) : (
-              renderLeftPanelContent()
-            )}
+        <nav className="bg-white border-b border-gray-200 shadow-sm">
+          <div className="flex items-center px-6">
+            {mainTabs.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  className={`flex items-center gap-2 px-4 py-3 text-xs font-medium border-b-2 transition-all whitespace-nowrap ${
+                    mainTab === tab.id ? "text-purple-600 border-purple-600" : "text-gray-600 hover:text-gray-800 border-transparent"
+                  }`}
+                  onClick={() => setMainTab(tab.id)}
+                >
+                  <Icon size={14} />
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
-        </aside>
+        </nav>
 
-        {/* Main Content & Comments Panel */}
-        <section className="flex-1 flex flex-col bg-gray-50 overflow-hidden">
-          <div className="flex-1 flex flex-col border-b border-gray-200">
-            {showMetrics && metadata && (
-              <div className="p-4 border-b border-gray-200 bg-white">
-                <OntologyHeader metadata={metadata} />
-                <MetricsPanel metadata={metadata} />
-              </div>
-            )}
-
-            <div className="flex-1 overflow-y-auto p-4">
-              {renderSelectedItemDetails()}
+        {mainTab === "Entities" && (
+          <nav className="bg-gray-50 border-b border-gray-200 px-6">
+            <div className="flex items-center gap-1">
+              {entitiesTabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.id}
+                    className={`flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-t transition-all whitespace-nowrap ${
+                      entitiesTab === tab.id ? "bg-white text-purple-600 border-t-2 border-purple-600" : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+                    }`}
+                    onClick={() => {
+                      setEntitiesTab(tab.id);
+                      setSelectedItem(null);
+                    }}
+                  >
+                    <Icon size={12} />
+                    {tab.label}
+                    {tab.count != null && (
+                      <span className="bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded text-xs font-bold">{tab.count.toLocaleString()}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-          </div>
+          </nav>
+        )}
 
-          {/* Comments & Project Feed */}
-          <div className="h-64 shrink-0 flex flex-col bg-white border-t border-gray-200">
-            <div className="bg-gray-50 border-b border-gray-200 p-2 flex items-center justify-between text-xs font-bold text-gray-600 h-9">
-              <span>Comments</span>
-              <button className="p-1 hover:bg-gray-200 rounded">
-                <X size={14} />
-              </button>
-            </div>
-            <div className="flex-1 p-4 overflow-y-auto text-center text-gray-400">
-              <p>Comments functionality not yet implemented.</p>
-            </div>
-          </div>
-        </section>
-      </main>
-
-      {isUploadModalOpen && (
-        <UploadModal
-          onClose={() => setUploadModalOpen(false)}
-          onUpload={handleUpload}
-        />
-      )}
-
-      {isCreateClassModalOpen && (
-        <CreateClassModal
-          onClose={() => setCreateClassModalOpen(false)}
-          onCreate={handleCreateClass}
-          parentId={parentIdForNewClass}
-        />
-      )}
-    </div>
+        <main className="flex flex-1 overflow-hidden">
+          {mainTab === "Entities" ? (
+            <>
+              <aside className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-sm">
+                <div className="p-4 border-b border-gray-200 bg-gray-50 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <button className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-xs font-medium transition-colors shadow-sm">
+                      <Plus size={14} />
+                      New
+                    </button>
+                    <button className="p-2 hover:bg-gray-200 rounded-lg transition-colors">
+                      <Filter size={14} className="text-gray-600" />
+                    </button>
+                    
+                    {(entitiesTab === "ObjectProperties" || entitiesTab === "DataProperties") && !searchQuery && (
+                      <button 
+                        onClick={() => setShowHierarchicalView(!showHierarchicalView)}
+                        className={`p-2 rounded-lg transition-colors ${
+                          showHierarchicalView 
+                            ? 'bg-purple-100 text-purple-600' 
+                            : 'hover:bg-gray-200 text-gray-600'
+                        }`}
+                        title={showHierarchicalView ? "Show flat list" : "Show hierarchy"}
+                      >
+                        {showHierarchicalView ? (
+                          <List size={14} />
+                        ) : (
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+                          </svg>
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="relative">
+                    <Search size={14} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder={`Search ${entitiesTab.toLowerCase()}...`}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+                    />
+                  </div>
+                </div>
+                
+                <div 
+                  ref={classListRef}
+                  className="flex-1 overflow-y-auto p-2"
+                >
+                  {renderEntitiesContent()}
+                  
+                  {isLoadingMore && entitiesTab === "Classes" && (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 size={20} className="animate-spin text-purple-600 mr-2" />
+                      <span className="text-sm text-gray-500">Loading more classes...</span>
+                    </div>
+                  )}
+                  
+                  {!topLevelHasMore && allTopLevelClasses.length > 0 && entitiesTab === "Classes" && (
+                    <div className="text-center py-4 text-sm text-gray-400">
+                      All {allTopLevelClasses.length} top-level classes loaded
+                    </div>
+                  )}
+                </div>
+              </aside>
+              <section className="flex-1 overflow-y-auto p-6 bg-gray-50">
+                {renderSelectedItemDetails()}
+              </section>
+            </>
+          ) : (
+            <section className="flex-1 overflow-y-auto bg-gray-50">
+              {renderMainContent()}
+            </section>
+          )}
+        </main>
+      </div>
+    </>
   );
 };
 
-export default Dashboard;
-
-
+export default EnhancedDashboard;

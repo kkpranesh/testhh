@@ -4,6 +4,7 @@ import SignupForm from './components/SignupForm';
 import Dashboard from './components/DahboardForm';
 import { useAuth } from './custom-hook/useAuth';
 import { FileProvider } from './contexts/FileContexts';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const AppContent = () => {
     const { user, loading } = useAuth();
@@ -32,9 +33,11 @@ const AppContent = () => {
 
 const App = () => {
     return (
-        <FileProvider>
-            <AppContent />
-        </FileProvider>
+        <ErrorBoundary>
+            <FileProvider>
+                <AppContent />
+            </FileProvider>
+        </ErrorBoundary>
     );
 };
 
